@@ -49,6 +49,9 @@ int main() {
     
     cache.resetStats();
 
+    cache.invalidateAll();
+    
+
     // Reusamos pe0 y cache. Seteamos:
     // R1 = 10.0 y STORE en A (0x0000)
     // R1 = 20.0 y STORE en B (0x0100)  // mismo set, otro tag

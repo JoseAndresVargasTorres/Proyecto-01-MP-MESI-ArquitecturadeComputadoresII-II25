@@ -56,8 +56,6 @@ public:
     void setRegisterDouble(int reg_num, double value);
     double getRegisterDouble(int reg_num) const;
 
-    void invalidateAll();
-    
     // Estadísticas
     uint64_t getReadOps() const { return read_ops; }
     uint64_t getWriteOps() const { return write_ops; }

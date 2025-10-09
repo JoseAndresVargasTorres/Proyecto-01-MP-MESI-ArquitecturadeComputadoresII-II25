@@ -160,3 +160,18 @@ void Cache2Way::dump(std::ostream& os) const {
      << "\n";
 }
 
+void Cache2Way::invalidateAll() {
+  std::scoped_lock lk(mtx_);
+  for (uint32_t s = 0; s < SETS; ++s) {
+    for (uint32_t w = 0; w < WAYS; ++w) {
+      auto& L = sets_[s].ways[w];
+      L.valid = false;
+      L.dirty = false;
+      L.mesi  = MESI::I;
+      L.tag   = 0;
+      L.last_use = 0;
+    }
+  }
+}
+
+

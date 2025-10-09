@@ -61,8 +61,9 @@ public:
 
   // Dump de estado (tags/valid/dirty/MESI por set/way).
   void dump(std::ostream& os) const;
-  
 
+  void invalidateAll();
+  
 private:
   struct Line {
     uint64_t tag    = 0;
