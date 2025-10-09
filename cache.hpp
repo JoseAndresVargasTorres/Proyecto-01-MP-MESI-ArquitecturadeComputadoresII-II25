@@ -6,6 +6,7 @@
 #include <optional>
 #include <ostream>
 #include <stdexcept>
+#include "interconnect.hpp"  // ← NUEVO: bus + IBusClient
 
 /// Interfaz mínima para memoria principal.
 /// Adaptá este wrapper a tu clase MainMemory real.
@@ -17,7 +18,7 @@ struct IMainMemory {
 
 /// Caché 2-way, 16 líneas, 32B por línea, write-allocate + write-back.
 /// Pensada para accesos de 64 bits (enteros o double).
-class Cache2Way {
+class Cache2Way : public IBusClient {  // ← NUEVO: implementa IBusClient
 public:
   static constexpr uint32_t LINE_SIZE_BYTES = 32;     // 32 B
   static constexpr uint32_t NUM_LINES       = 16;     // total lines
@@ -30,18 +31,30 @@ public:
   static constexpr uint32_t WORD_SIZE       = 8;      // 8 B (64 bits)
   static constexpr uint32_t WORDS_PER_LINE  = LINE_SIZE_BYTES / WORD_SIZE; // 4 palabras de 64b por línea
 
-  enum class MESI : uint8_t { I=0, S, E, M }; // Para futuro (ahora E/M según acceso)
+  enum class MESI : uint8_t { I=0, S, E, M };
 
   struct Stats {
+    // caché
     uint64_t hits        = 0;
     uint64_t misses      = 0;
     uint64_t line_fills  = 0;  // líneas traídas de memoria
     uint64_t writebacks  = 0;  // líneas sucias escritas a memoria
     uint64_t mem_reads   = 0;  // lecturas de 64b a memoria (para fill)
     uint64_t mem_writes  = 0;  // escrituras de 64b a memoria (para write-back)
+    // bus (NUEVO)
+    uint64_t bus_rd      = 0;  // BusRd emitidos
+    uint64_t bus_rdx     = 0;  // BusRdX emitidos
+    uint64_t bus_inv     = 0;  // Invalidate emitidos
+    // reacciones a snoop (NUEVO)
+    uint64_t snoop_to_I  = 0;  // líneas invalidadas por snoop
+    uint64_t snoop_to_S  = 0;  // líneas degradadas a S por snoop
+    uint64_t snoop_flush = 0;  // flush en respuesta a snoop
   };
 
   explicit Cache2Way(IMainMemory& mem) : mem_(mem) {}
+
+  // Conexión al bus (NUEVO)
+  void setBus(Interconnect* b) { std::scoped_lock lk(mtx_); bus_ = b; }
 
   // Devuelve true si fue hit.
   bool load64(uint64_t addr, uint64_t& out);
@@ -62,8 +75,12 @@ public:
   // Dump de estado (tags/valid/dirty/MESI por set/way).
   void dump(std::ostream& os) const;
 
+  // Invalidar todo el contenido de la caché (para pruebas)
   void invalidateAll();
-  
+
+  // IBusClient (NUEVO): reacción a mensajes de bus
+  void snoop(BusMsg msg, uint64_t base_addr) override;
+
 private:
   struct Line {
     uint64_t tag    = 0;
@@ -92,12 +109,13 @@ private:
   uint32_t chooseVictim(uint32_t set_idx) const;
 
   // Trae la línea desde memoria (line fill).
-  void fetchLine(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr, uint64_t tag);
+  void fetchLine(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr, uint64_t tg);
 
   // Si la línea está sucia, la escribe a memoria.
   void writeBackIfDirty(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr);
 
   // Asegura que la línea esté presente; retorna par (way_idx, hit).
+  // (Úsala si querés, pero para MESI conviene controlar estados en load/store directamente)
   std::pair<uint32_t,bool> ensureLine(uint64_t addr);
 
   // Escribe/lee palabra de 64b en la línea ya presente.
@@ -110,10 +128,27 @@ private:
     std::memcpy(&L.data[word_off * WORD_SIZE], &v, WORD_SIZE);
   }
 
+  // --- MESI / Bus helpers (NUEVO) ---
+  // Encuentra la línea por base de línea (alineada a 32B) en este caché; -1 si no está
+  int findLineByBase(uint64_t base_addr) const;
+
+  // Emite mensaje al bus (si existe) y actualiza counters
+  inline void emit(BusMsg m, uint64_t base_addr) {
+    if (!bus_) return;
+    switch (m) {
+      case BusMsg::BusRd:       stats_.bus_rd++;  break;
+      case BusMsg::BusRdX:      stats_.bus_rdx++; break;
+      case BusMsg::Invalidate:  stats_.bus_inv++; break;
+      default: break;
+    }
+    bus_->broadcast(this, m, base_addr);
+  }
+
 private:
   IMainMemory& mem_;
   mutable std::mutex mtx_;
   std::array<Set, SETS> sets_{};
   mutable uint64_t use_tick_ = 0; // contador global para LRU
   Stats stats_{};
+  Interconnect* bus_ = nullptr;   // ← NUEVO: conexión al bus
 };

@@ -2,6 +2,9 @@
 #include <algorithm>
 #include <iomanip>
 
+// ===============================
+// Helpers internos sin cambios
+// ===============================
 std::optional<uint32_t> Cache2Way::findHit(uint32_t set_idx, uint64_t tg) const {
   const auto& S = sets_[set_idx];
   for (uint32_t w = 0; w < WAYS; ++w) {
@@ -38,6 +41,7 @@ void Cache2Way::writeBackIfDirty(uint32_t set_idx, uint32_t way_idx, uint64_t ba
   }
 }
 
+// NOTA: ya no fija MESI aquí; se fija en load/store
 void Cache2Way::fetchLine(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr, uint64_t tg) {
   auto& L = sets_[set_idx].ways[way_idx];
   // Antes de traer, si la víctima está sucia -> write-back
@@ -52,14 +56,15 @@ void Cache2Way::fetchLine(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr
     stats_.mem_reads++;
     writeWordInLine(L, i, v);
   }
-  L.tag   = tg;
-  L.valid = true;
-  L.dirty = false;
-  L.mesi  = MESI::E; // En monoprocesador, tras fill solemos quedar en E
+  L.tag     = tg;
+  L.valid   = true;
+  L.dirty   = false;
+  // L.mesi  = (no tocar aquí)
   L.last_use = ++use_tick_;
   stats_.line_fills++;
 }
 
+// keep (por compatibilidad con pruebas existentes)
 std::pair<uint32_t,bool> Cache2Way::ensureLine(uint64_t addr) {
   const uint32_t set_idx  = index(addr);
   const uint64_t tg       = tag(addr);
@@ -76,6 +81,68 @@ std::pair<uint32_t,bool> Cache2Way::ensureLine(uint64_t addr) {
   return { victim, false };
 }
 
+// ===============================
+// MESI / Bus: nuevos helpers
+// ===============================
+int Cache2Way::findLineByBase(uint64_t base_addr) const {
+  const uint32_t set_idx = index(base_addr);
+  const uint64_t tg      = tag(base_addr);
+  const auto& S = sets_[set_idx];
+  for (uint32_t w = 0; w < WAYS; ++w) {
+    const auto& L = S.ways[w];
+    if (L.valid && L.tag == tg) return (int)w;
+  }
+  return -1;
+}
+
+void Cache2Way::snoop(BusMsg msg, uint64_t base_addr) {
+  std::scoped_lock lk(mtx_);
+  const uint32_t set_idx = index(base_addr);
+  int w = findLineByBase(base_addr);
+  if (w < 0) return; // no tengo la línea
+
+  auto& L = sets_[set_idx].ways[w];
+
+  auto do_flush = [&](){
+    for (uint32_t i=0;i<WORDS_PER_LINE;++i) {
+      uint64_t v = readWordInLine(L, i);
+      mem_.write64(base_addr + i*WORD_SIZE, v);
+      stats_.mem_writes++;
+    }
+    stats_.writebacks++;
+    stats_.snoop_flush++;
+  };
+
+  switch (msg) {
+    case BusMsg::BusRd:
+      if (L.mesi == MESI::M) { do_flush(); L.dirty=false; L.mesi = MESI::S; }
+      else if (L.mesi == MESI::E) { L.mesi = MESI::S; stats_.snoop_to_S++; }
+      // S/I: no cambian en BusRd
+      break;
+
+    case BusMsg::BusRdX:
+      if (L.mesi == MESI::M) { do_flush(); L.dirty=false; }
+      if (L.mesi != MESI::I) {
+        L.mesi = MESI::I; L.valid = false; stats_.snoop_to_I++;
+      }
+      break;
+
+    case BusMsg::Invalidate:
+      if (L.mesi == MESI::M) { do_flush(); L.dirty=false; }
+      if (L.mesi != MESI::I) {
+        L.mesi = MESI::I; L.valid = false; stats_.snoop_to_I++;
+      }
+      break;
+
+    case BusMsg::Flush:
+      // listeners no accionan; el flush lo ejecuta el emisor
+      break;
+  }
+}
+
+// ===============================
+// Accesos de 64 bits con MESI/bus
+// ===============================
 bool Cache2Way::load64(uint64_t addr, uint64_t& out) {
   if (addr % WORD_SIZE != 0)
     throw std::invalid_argument("Cache64 load: dirección no alineada a 8 bytes");
@@ -83,10 +150,29 @@ bool Cache2Way::load64(uint64_t addr, uint64_t& out) {
   std::scoped_lock lk(mtx_);
   const uint32_t set_idx = index(addr);
   const uint32_t woff    = wordOffset(addr);
-  auto [way, hit]        = ensureLine(addr);
-  out = readWordInLine(sets_[set_idx].ways[way], woff);
-  if (hit) stats_.hits++; else stats_.misses++;
-  return hit;
+  const uint64_t base    = lineBase(addr);
+  const uint64_t tg      = tag(addr);
+
+  if (auto h = findHit(set_idx, tg)) {
+    auto& L = sets_[set_idx].ways[*h];
+    L.last_use = ++use_tick_;
+    out = readWordInLine(L, woff);
+    stats_.hits++;
+    return true;
+  }
+
+  // MISS de lectura: pregunta al bus y luego trae la línea.
+  emit(BusMsg::BusRd, base);
+  uint32_t victim = chooseVictim(set_idx);
+  fetchLine(set_idx, victim, base, tg);
+
+  // En multinodo de forma conservadora quedamos en S tras BusRd
+  auto& L = sets_[set_idx].ways[victim];
+  L.mesi = MESI::S;
+
+  out = readWordInLine(L, woff);
+  stats_.misses++;
+  return false;
 }
 
 bool Cache2Way::store64(uint64_t addr, uint64_t value) {
@@ -96,18 +182,43 @@ bool Cache2Way::store64(uint64_t addr, uint64_t value) {
   std::scoped_lock lk(mtx_);
   const uint32_t set_idx = index(addr);
   const uint32_t woff    = wordOffset(addr);
-  // write-allocate: si miss, traemos la línea primero
-  auto [way, hit]        = ensureLine(addr);
+  const uint64_t base    = lineBase(addr);
+  const uint64_t tg      = tag(addr);
 
-  auto& L = sets_[set_idx].ways[way];
+  if (auto h = findHit(set_idx, tg)) {
+    auto& L = sets_[set_idx].ways[*h];
+
+    // Si está en S → upgrade con BusRdX; si está en E → upgrade silencioso
+    if (L.mesi == MESI::S) {
+      emit(BusMsg::BusRdX, base);
+      L.mesi = MESI::M;
+    } else if (L.mesi == MESI::E) {
+      L.mesi = MESI::M;
+    }
+    writeWordInLine(L, woff, value);
+    L.dirty = true;
+    L.last_use = ++use_tick_;
+    stats_.hits++;
+    return true;
+  }
+
+  // MISS de escritura: write-allocate + exclusividad
+  emit(BusMsg::BusRdX, base);
+  uint32_t victim = chooseVictim(set_idx);
+  fetchLine(set_idx, victim, base, tg);
+
+  auto& L = sets_[set_idx].ways[victim];
   writeWordInLine(L, woff, value);
   L.dirty = true;
-  L.mesi  = MESI::M; // tras escribir, quedamos en M (monoprocesador)
-
-  if (hit) stats_.hits++; else stats_.misses++;
-  return hit;
+  L.mesi  = MESI::M;
+  L.last_use = ++use_tick_;
+  stats_.misses++;
+  return false;
 }
 
+// ===============================
+// Wrappers double / flush / dump
+// ===============================
 bool Cache2Way::loadDouble(uint64_t addr, double& out) {
   uint64_t bits = 0;
   bool hit = load64(addr, bits);
@@ -157,6 +268,12 @@ void Cache2Way::dump(std::ostream& os) const {
      << " wbs=" << st.writebacks
      << " memR=" << st.mem_reads
      << " memW=" << st.mem_writes
+     << " | busRd=" << st.bus_rd
+     << " busRdX=" << st.bus_rdx
+     << " busInv=" << st.bus_inv
+     << " | snoopI=" << st.snoop_to_I
+     << " snoopS=" << st.snoop_to_S
+     << " snoopFlush=" << st.snoop_flush
      << "\n";
 }
 
@@ -173,5 +290,3 @@ void Cache2Way::invalidateAll() {
     }
   }
 }
-
-
