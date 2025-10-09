@@ -12,8 +12,8 @@ private:
     const uint64_t MEM_SIZE_WORDS = 512;
     mutable std::mutex mem_mutex;  // Para acceso thread-safe
     
-    uint64_t read_count;
-    uint64_t write_count;
+    mutable uint64_t read_count;
+    mutable uint64_t write_count;
 
     void checkAlignment(uint64_t addr) const;
     void checkBounds(uint64_t addr) const;

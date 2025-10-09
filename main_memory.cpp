@@ -1,38 +1,54 @@
-#ifndef MAIN_MEMORY_HPP
-#define MAIN_MEMORY_HPP
+#include "main_memory.hpp"
+#include <cstring>
 
-#include <vector>
-#include <cstdint>
-#include <stdexcept>
-#include <mutex>
+MainMemory::MainMemory() : read_count(0), write_count(0) {
+    memory.resize(MEM_SIZE_WORDS, 0);
+}
 
-class MainMemory {
-private:
-    std::vector<uint64_t> memory;  // 512 posiciones de 64 bits
-    const uint64_t MEM_SIZE_WORDS = 512;
-    mutable std::mutex mem_mutex;  // Para acceso thread-safe
+void MainMemory::checkAlignment(uint64_t addr) const {
+    if (addr % 8 != 0) {
+        throw std::runtime_error("Unaligned memory access");
+    }
+}
+
+void MainMemory::checkBounds(uint64_t addr) const {
+    if (addr / 8 >= MEM_SIZE_WORDS) {
+        throw std::out_of_range("Memory address out of range");
+    }
+}
+
+void MainMemory::writeWord(uint64_t addr, uint64_t data) {
+    checkAlignment(addr);
+    checkBounds(addr);
     
-    uint64_t read_count;
-    uint64_t write_count;
+    std::lock_guard<std::mutex> lock(mem_mutex);
+    memory[addr / 8] = data;
+    write_count++;
+}
 
-    void checkAlignment(uint64_t addr) const;
-    void checkBounds(uint64_t addr) const;
-
-public:
-    MainMemory();
-
-    // Lectura/escritura de palabras de 64 bits
-    void writeWord(uint64_t addr, uint64_t data);
-    uint64_t readWord(uint64_t addr) const;
+uint64_t MainMemory::readWord(uint64_t addr) const {
+    checkAlignment(addr);
+    checkBounds(addr);
     
-    // Lectura/escritura de doubles
-    void writeDouble(uint64_t addr, double data);
-    double readDouble(uint64_t addr) const;
-    
-    // Estadísticas
-    uint64_t getReadCount() const { return read_count; }
-    uint64_t getWriteCount() const { return write_count; }
-    void resetStats();
-};
+    std::lock_guard<std::mutex> lock(mem_mutex);
+    read_count++;
+    return memory[addr / 8];
+}
 
-#endif // MAIN_MEMORY_HPP
+void MainMemory::writeDouble(uint64_t addr, double data) {
+    uint64_t bits;
+    std::memcpy(&bits, &data, sizeof(double));
+    writeWord(addr, bits);
+}
+
+double MainMemory::readDouble(uint64_t addr) const {
+    uint64_t bits = readWord(addr);
+    double data;
+    std::memcpy(&data, &bits, sizeof(double));
+    return data;
+}
+
+void MainMemory::resetStats() {
+    read_count = 0;
+    write_count = 0;
+}
