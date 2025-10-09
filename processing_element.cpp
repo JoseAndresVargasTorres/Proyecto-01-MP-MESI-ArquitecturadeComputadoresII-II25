@@ -1,6 +1,9 @@
 #include "processing_element.hpp"
 #include <cstring>
 #include <stdexcept>
+#include "cache.hpp"   // ← necesario aquí (no en el .hpp)
+#include <iostream>
+
 
 ProcessingElement::ProcessingElement(int id) 
     : pe_id(id), pc(0), read_ops(0), write_ops(0) {
@@ -23,21 +26,46 @@ void ProcessingElement::executeNextInstruction() {
     
     switch (inst.type) {
         case InstructionType::LOAD: {
-            // LOAD REG, [REG_addr]
-            // Esta instrucción necesita interactuar con caché
-            // Por ahora solo incrementa PC
+            if (!cache_) throw std::runtime_error("PE sin cache (LOAD)");
+
+            uint64_t addr = getRegister(inst.reg_src1);
+            double value = 0.0;
+
+            std::cout << "[PE" << pe_id << "] Ejecutando LOAD desde " 
+                    << std::hex << addr << std::dec << "\n";
+
+            bool hit = cache_->loadDouble(addr, value);
+
+            std::cout << "[PE" << pe_id << "] LOAD " 
+                    << (hit ? "HIT" : "MISS") 
+                    << " valor=" << value << "\n";
+
+            setRegisterDouble(inst.reg_dest, value);
             read_ops++;
             pc++;
             break;
         }
-        
+
         case InstructionType::STORE: {
-            // STORE REG, [REG_addr]
-            // Esta instrucción necesita interactuar con caché
+            if (!cache_) throw std::runtime_error("PE sin cache (STORE)");
+
+            uint64_t addr = getRegister(inst.reg_src1);
+            double value = getRegisterDouble(inst.reg_dest);
+
+            std::cout << "[PE" << pe_id << "] Ejecutando STORE en " 
+                    << std::hex << addr << std::dec 
+                    << " valor=" << value << "\n";
+
+            bool hit = cache_->storeDouble(addr, value);
+
+            std::cout << "[PE" << pe_id << "] STORE " 
+                    << (hit ? "HIT" : "MISS") << "\n";
+
             write_ops++;
             pc++;
             break;
         }
+
         
         case InstructionType::FMUL: {
             // FMUL REGd, Ra, Rb

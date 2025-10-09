@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include "cache.hpp"
 
 // Tipos de instrucción según ISA especificado
 enum class InstructionType {
@@ -27,6 +28,7 @@ struct Instruction {
 
 class ProcessingElement {
 private:
+    Cache2Way* cache_ = nullptr;  // <- puntero a la caché
     int pe_id;
     uint64_t registers[8];  // 8 registros de 64 bits (REG0-REG7)
     std::vector<Instruction> program;  // Programa cargado
@@ -53,11 +55,15 @@ public:
     
     void setRegisterDouble(int reg_num, double value);
     double getRegisterDouble(int reg_num) const;
+
+    void invalidateAll();
     
     // Estadísticas
     uint64_t getReadOps() const { return read_ops; }
     uint64_t getWriteOps() const { return write_ops; }
     void resetStats();
+
+    void setCache(Cache2Way* c) { cache_ = c; }
     
     int getPEId() const { return pe_id; }
 };
