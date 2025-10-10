@@ -290,3 +290,14 @@ void Cache2Way::invalidateAll() {
     }
   }
 }
+
+std::optional<Cache2Way::MESI> Cache2Way::getLineMESI(uint64_t addr) const {
+  std::scoped_lock lk(mtx_);
+  const uint64_t base = lineBase(addr);
+  int w = findLineByBase(base);
+  if (w < 0) return std::nullopt;
+  const uint32_t set_idx = index(base);
+  const auto& L = sets_[set_idx].ways[w];
+  if (!L.valid) return std::nullopt;
+  return L.mesi;
+}
