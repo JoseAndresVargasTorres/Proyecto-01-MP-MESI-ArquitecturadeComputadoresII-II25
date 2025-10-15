@@ -8,7 +8,6 @@ enum class BusMsg { BusRd, BusRdX, Invalidate, Flush };
 class IBusClient {
 public:
   virtual ~IBusClient() = default;
-  // base_addr = dirección base de la línea (alineada a 32B)
   virtual void snoop(BusMsg msg, uint64_t base_addr) = 0;
 };
 
@@ -18,10 +17,24 @@ public:
     std::scoped_lock lk(mx_);
     clients_.push_back(c);
   }
+  
   void broadcast(IBusClient* src, BusMsg msg, uint64_t base_addr) {
-    std::scoped_lock lk(mx_);
-    for (auto* c : clients_) if (c != src) c->snoop(msg, base_addr);
+    // Copiar lista de clientes bajo lock
+    std::vector<IBusClient*> targets;
+    {
+      std::scoped_lock lk(mx_);
+      targets = clients_;
+    }
+    
+    // Hacer broadcast SIN el mutex del bus
+    // Cada caché manejará su propio mutex internamente
+    for (auto* c : targets) {
+      if (c != src) {
+        c->snoop(msg, base_addr);
+      }
+    }
   }
+  
 private:
   std::mutex mx_;
   std::vector<IBusClient*> clients_;

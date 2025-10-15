@@ -1,9 +1,8 @@
 #include "processing_element.hpp"
 #include <cstring>
 #include <stdexcept>
-#include "cache.hpp"   // ← necesario aquí (no en el .hpp)
+#include "cache.hpp"
 #include <iostream>
-
 
 ProcessingElement::ProcessingElement(int id) 
     : pe_id(id), pc(0), read_ops(0), write_ops(0) {
@@ -66,7 +65,6 @@ void ProcessingElement::executeNextInstruction() {
             break;
         }
 
-        
         case InstructionType::FMUL: {
             // FMUL REGd, Ra, Rb
             double a = getRegisterDouble(inst.reg_src1);
@@ -86,21 +84,23 @@ void ProcessingElement::executeNextInstruction() {
         }
         
         case InstructionType::INC: {
-            // INC REG
-            registers[inst.reg_dest]++;
+            // INC REG - incrementa en 8 bytes (tamaño de double)
+            // Nota: Adaptado para iterar sobre direcciones de memoria
+            // según el código de la Figura 2 que usa "initial address"
+            registers[inst.reg_dest] += 8;
             pc++;
             break;
         }
         
         case InstructionType::DEC: {
-            // DEC REG
+            // DEC REG - decrementa en 1 (para contadores)
             registers[inst.reg_dest]--;
             pc++;
             break;
         }
         
         case InstructionType::JNZ: {
-            // JNZ label (salta si REG3 != 0, por convención)
+            // JNZ label (salta si REG != 0)
             if (registers[inst.reg_dest] != 0) {
                 pc = inst.label;
             } else {

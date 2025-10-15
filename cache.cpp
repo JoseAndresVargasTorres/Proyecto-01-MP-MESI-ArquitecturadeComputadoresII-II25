@@ -147,31 +147,47 @@ bool Cache2Way::load64(uint64_t addr, uint64_t& out) {
   if (addr % WORD_SIZE != 0)
     throw std::invalid_argument("Cache64 load: dirección no alineada a 8 bytes");
 
-  std::scoped_lock lk(mtx_);
-  const uint32_t set_idx = index(addr);
-  const uint32_t woff    = wordOffset(addr);
-  const uint64_t base    = lineBase(addr);
-  const uint64_t tg      = tag(addr);
+  uint32_t set_idx, woff, victim;
+  uint64_t base, tg;
+  bool is_miss = false;
+  
+  // Fase 1: Verificar hit/miss CON mutex
+  {
+    std::scoped_lock lk(mtx_);
+    set_idx = index(addr);
+    woff = wordOffset(addr);
+    base = lineBase(addr);
+    tg = tag(addr);
 
-  if (auto h = findHit(set_idx, tg)) {
-    auto& L = sets_[set_idx].ways[*h];
-    L.last_use = ++use_tick_;
-    out = readWordInLine(L, woff);
-    stats_.hits++;
-    return true;
+    if (auto h = findHit(set_idx, tg)) {
+      auto& L = sets_[set_idx].ways[*h];
+      L.last_use = ++use_tick_;
+      out = readWordInLine(L, woff);
+      stats_.hits++;
+      return true;  // HIT - salimos temprano
+    }
+    
+    // Es MISS
+    is_miss = true;
+    victim = chooseVictim(set_idx);
+  }
+  // Mutex liberado aquí
+
+  // Fase 2: Emitir al bus SIN mutex
+  if (is_miss) {
+    emit(BusMsg::BusRd, base);
   }
 
-  // MISS de lectura: pregunta al bus y luego trae la línea.
-  emit(BusMsg::BusRd, base);
-  uint32_t victim = chooseVictim(set_idx);
-  fetchLine(set_idx, victim, base, tg);
+  // Fase 3: Fetch y actualización CON mutex
+  {
+    std::scoped_lock lk(mtx_);
+    fetchLine(set_idx, victim, base, tg);
+    auto& L = sets_[set_idx].ways[victim];
+    L.mesi = MESI::S;
+    out = readWordInLine(L, woff);
+    stats_.misses++;
+  }
 
-  // En multinodo de forma conservadora quedamos en S tras BusRd
-  auto& L = sets_[set_idx].ways[victim];
-  L.mesi = MESI::S;
-
-  out = readWordInLine(L, woff);
-  stats_.misses++;
   return false;
 }
 
@@ -179,41 +195,70 @@ bool Cache2Way::store64(uint64_t addr, uint64_t value) {
   if (addr % WORD_SIZE != 0)
     throw std::invalid_argument("Cache64 store: dirección no alineada a 8 bytes");
 
-  std::scoped_lock lk(mtx_);
-  const uint32_t set_idx = index(addr);
-  const uint32_t woff    = wordOffset(addr);
-  const uint64_t base    = lineBase(addr);
-  const uint64_t tg      = tag(addr);
+  uint32_t set_idx, woff, victim;
+  uint64_t base, tg;
+  bool is_hit = false;
+  bool need_upgrade = false;
+  bool need_fetch = false;
+  MESI old_state;
 
-  if (auto h = findHit(set_idx, tg)) {
-    auto& L = sets_[set_idx].ways[*h];
+  // Fase 1: Verificar hit/miss CON mutex
+  {
+    std::scoped_lock lk(mtx_);
+    set_idx = index(addr);
+    woff = wordOffset(addr);
+    base = lineBase(addr);
+    tg = tag(addr);
 
-    // Si está en S → upgrade con BusRdX; si está en E → upgrade silencioso
-    if (L.mesi == MESI::S) {
-      emit(BusMsg::BusRdX, base);
-      L.mesi = MESI::M;
-    } else if (L.mesi == MESI::E) {
-      L.mesi = MESI::M;
+    if (auto h = findHit(set_idx, tg)) {
+      auto& L = sets_[set_idx].ways[*h];
+      old_state = L.mesi;
+      
+      if (L.mesi == MESI::S) {
+        need_upgrade = true;
+      } else if (L.mesi == MESI::E) {
+        L.mesi = MESI::M;
+      }
+      
+      writeWordInLine(L, woff, value);
+      L.dirty = true;
+      L.last_use = ++use_tick_;
+      stats_.hits++;
+      is_hit = true;
+    } else {
+      // Es MISS
+      need_fetch = true;
+      victim = chooseVictim(set_idx);
     }
-    writeWordInLine(L, woff, value);
-    L.dirty = true;
-    L.last_use = ++use_tick_;
-    stats_.hits++;
+  }
+  // Mutex liberado aquí
+
+  // Fase 2: Emitir al bus SIN mutex
+  if (need_upgrade) {
+    emit(BusMsg::BusRdX, base);
+    
+    std::scoped_lock lk(mtx_);
+    if (auto h = findHit(set_idx, tg)) {
+      sets_[set_idx].ways[*h].mesi = MESI::M;
+    }
     return true;
   }
+  
+  if (need_fetch) {
+    emit(BusMsg::BusRdX, base);
+    
+    std::scoped_lock lk(mtx_);
+    fetchLine(set_idx, victim, base, tg);
+    auto& L = sets_[set_idx].ways[victim];
+    writeWordInLine(L, woff, value);
+    L.dirty = true;
+    L.mesi = MESI::M;
+    L.last_use = ++use_tick_;
+    stats_.misses++;
+    return false;
+  }
 
-  // MISS de escritura: write-allocate + exclusividad
-  emit(BusMsg::BusRdX, base);
-  uint32_t victim = chooseVictim(set_idx);
-  fetchLine(set_idx, victim, base, tg);
-
-  auto& L = sets_[set_idx].ways[victim];
-  writeWordInLine(L, woff, value);
-  L.dirty = true;
-  L.mesi  = MESI::M;
-  L.last_use = ++use_tick_;
-  stats_.misses++;
-  return false;
+  return is_hit;
 }
 
 // ===============================

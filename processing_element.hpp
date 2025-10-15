@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <vector>
 #include <string>
-#include "cache.hpp"
+
+// Forward declaration para evitar dependencia circular
+class Cache2Way;
 
 // Tipos de instrucción según ISA especificado
 enum class InstructionType {
@@ -12,8 +14,8 @@ enum class InstructionType {
     STORE,  // STORE REG, [REG_addr]
     FMUL,   // FMUL REGd, Ra, Rb
     FADD,   // FADD REGd, Ra, Rb
-    INC,    // INC REG
-    DEC,    // DEC REG
+    INC,    // INC REG (incrementa en 8 bytes para direcciones)
+    DEC,    // DEC REG (decrementa en 1 para contadores)
     JNZ     // JNZ label
 };
 
@@ -28,7 +30,7 @@ struct Instruction {
 
 class ProcessingElement {
 private:
-    Cache2Way* cache_ = nullptr;  // <- puntero a la caché
+    Cache2Way* cache_ = nullptr;  // Puntero a la caché
     int pe_id;
     uint64_t registers[8];  // 8 registros de 64 bits (REG0-REG7)
     std::vector<Instruction> program;  // Programa cargado
@@ -61,6 +63,7 @@ public:
     uint64_t getWriteOps() const { return write_ops; }
     void resetStats();
 
+    // Configuración de caché
     void setCache(Cache2Way* c) { cache_ = c; }
     
     int getPEId() const { return pe_id; }
