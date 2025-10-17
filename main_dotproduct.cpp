@@ -124,7 +124,7 @@ int main() {
     // A[] en 0x0000 - 0x0078
     // B[] en 0x0080 - 0x00F8
     // partial_sums[] en 0x0100, 0x0120, 0x0140, 0x0160 (separados por 32 bytes)
-    
+    //************ */
     uint64_t addr_A_base = 0x0000;
     uint64_t addr_B_base = 0x0080;
     uint64_t addr_partial_sums_base = 0x0100;
