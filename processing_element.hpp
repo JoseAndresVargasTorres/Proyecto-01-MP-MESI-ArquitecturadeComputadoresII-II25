@@ -51,6 +51,7 @@ public:
     bool hasFinished() const;
     void reset();
     
+    void hardReset();
     // Acceso a registros
     void setRegister(int reg_num, uint64_t value);
     uint64_t getRegister(int reg_num) const;
@@ -62,6 +63,7 @@ public:
     uint64_t getReadOps() const { return read_ops; }
     uint64_t getWriteOps() const { return write_ops; }
     void resetStats();
+    
 
     // Configuración de caché
     void setCache(Cache2Way* c) { cache_ = c; }

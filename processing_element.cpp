@@ -154,3 +154,9 @@ void ProcessingElement::resetStats() {
     read_ops = 0;
     write_ops = 0;
 }
+
+void ProcessingElement::hardReset() {
+    reset();  // reutiliza tu reset()
+}
+
+
