@@ -184,16 +184,17 @@ static bool prompt_step(bool &stepping_enabled) {
     std::cout << "\n(step) Enter=next | c=continue | q=quit > ";
     std::string line;
     if (!std::getline(std::cin, line)) {
+        // Si stdin se cierra, continuar sin pausas
         stepping_enabled = false;
         return true;
     }
-    if (line.empty()) return true;
-    if (line == "c" || line == "C") {
+    if (line.empty()) return true;                  // next
+    if (line == "c" || line == "C") {               // continuar hasta el final
         stepping_enabled = false;
         return true;
     }
-    if (line == "q" || line == "Q") { std::exit(0); }
-    return true;
+    if (line == "q" || line == "Q") { std::exit(0); } // salir
+    return true; // cualquier otra cosa = next
 }
 
 // ==========================
@@ -231,10 +232,10 @@ int main(int argc, char* argv[]) {
     
     SystemConfig config(NPE, N);
     
-    // === Config de stepping ===
-    bool stepping_enabled = false;  // Cambiar a true para modo paso a paso
-    int breakpoint_step = 10;
-    int step_count = 0;
+    // === Config de stepping (puedes cambiarlo rápido aquí) ===
+    bool stepping_enabled = true;   // true = modo paso a paso / false = hilos
+    int  breakpoint_step  = 5;      // pausa cada K pasos globales
+    int  step_count       = 0;      // contador global de pasos
     
     std::cout << "=== SIMULADOR DE PRODUCTO PUNTO PARALELO ===\n";
     std::cout << "Configuración: N=" << N << ", PEs=" << NPE << "\n\n";
@@ -285,13 +286,13 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "   Programa cargado (" << programa.size() << " instrucciones por PE)\n\n";
     
-    // ===== PASO 5: Ejecutar =====
+    // ===== PASO 5: Ejecutar (stepping o paralelo) =====
     std::cout << "5. Ejecutando PEs";
-    if (stepping_enabled) std::cout << " en modo STEP...\n\n";
-    else std::cout << " en paralelo...\n\n";
+    if (stepping_enabled) std::cout << " en modo STEP (cada " << breakpoint_step << " pasos)...\n\n";
+    else                  std::cout << " en paralelo...\n\n";
     
     if (!stepping_enabled) {
-        // Modo paralelo
+        // === MODO PARALELO (hilos) ===
         std::vector<std::thread> threads;
         for (int i = 0; i < NPE; i++) {
             threads.emplace_back(ejecutarPE, pes[i], i);
@@ -299,7 +300,7 @@ int main(int argc, char* argv[]) {
         for (auto& t : threads) t.join();
         std::cout << "\n6. Todos los PEs han terminado.\n";
     } else {
-        // Modo step
+        // === MODO STEP (round-robin 1 instrucción por PE) ===
         std::vector<bool> alive(NPE, true);
         int vivos = NPE;
         
@@ -315,8 +316,8 @@ int main(int argc, char* argv[]) {
             std::cout << "[step " << step_count << "] Ejecutó PE" << id << "\n";
             
             if (stepping_enabled && (step_count % breakpoint_step == 0)) {
-                dump_state(memoria, config, pes, false);
-                (void)prompt_step(stepping_enabled);
+                dump_state(memoria, config, pes, /*leer_memoria=*/false);
+                (void)prompt_step(stepping_enabled); // puede desactivar stepping con 'c'
             }
         };
         
@@ -325,6 +326,7 @@ int main(int argc, char* argv[]) {
                 one_step(i);
             }
         }
+        
         std::cout << "\n6. Todos los PEs han terminado (modo STEP).\n";
     }
     
@@ -333,7 +335,7 @@ int main(int argc, char* argv[]) {
     for (auto* cache : caches) {
         cache->flushAll();
     }
-    std::cout << "   Todas las cachés flushed.\n";
+    std::cout << "   Todas las cachés flushed (datos escritos a memoria).\n";
     
     // ===== PASO 7: Recolectar resultados =====
     std::cout << "\n8. Recolectando resultados parciales...\n";
@@ -366,8 +368,14 @@ int main(int argc, char* argv[]) {
         std::cout << "      Hits: " << s.hits << "  Misses: " << s.misses << "\n";
         std::cout << "      Line fills: " << s.line_fills
                   << "  Writebacks: " << s.writebacks << "\n";
+        std::cout << "      Mem reads: " << s.mem_reads
+                  << "  Mem writes: " << s.mem_writes << "\n";
         std::cout << "      Bus - BusRd: " << s.bus_rd
-                  << "  BusRdX: " << s.bus_rdx << "\n\n";
+                  << "  BusRdX: " << s.bus_rdx
+                  << "  Invalidate: " << s.bus_inv << "\n";
+        std::cout << "      Snoop - toI: " << s.snoop_to_I
+                  << "  toS: " << s.snoop_to_S
+                  << "  Flush: " << s.snoop_flush << "\n\n";
     };
     
     for (int i = 0; i < NPE; i++) {
