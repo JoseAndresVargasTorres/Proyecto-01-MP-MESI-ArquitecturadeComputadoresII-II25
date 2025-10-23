@@ -337,15 +337,38 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "   Todas las cachés flushed (datos escritos a memoria).\n";
     
-    // ===== PASO 7: Recolectar resultados =====
-    std::cout << "\n8. Recolectando resultados parciales...\n";
-    double resultado_paralelo = 0.0;
+    // ===== PASO 7: PE0 realiza la suma final =====
+    std::cout << "\n8. PE0 calculando suma final...\n";
+    
+    // PE0 lee su propia suma parcial (ya está en su caché)
+    double suma_final = pes[0]->getRegisterDouble(4);
+    std::cout << "   PE0 lee su partial_sum[0] = " << suma_final << "\n";
+    
+    // PE0 lee las sumas parciales de los demás PEs y las acumula
+    for (int i = 1; i < NPE; i++) {
+        uint64_t addr = config.addr_partial_sums_base + i * config.partial_sum_stride;
+        double partial_sum = 0.0;
+        caches[0]->loadDouble(addr, partial_sum);
+        std::cout << "   PE0 lee partial_sum[" << i << "] = " << partial_sum << "\n";
+        suma_final += partial_sum;
+    }
+    
+    std::cout << "   PE0 calculó suma final = " << suma_final << "\n";
+    
+    // Opcionalmente, PE0 puede escribir el resultado final en memoria
+    uint64_t addr_resultado_final = config.addr_partial_sums_base + NPE * config.partial_sum_stride;
+    caches[0]->storeDouble(addr_resultado_final, suma_final);
+    caches[0]->flushAll(); // Asegurar que se escriba a memoria
+    
+    std::cout << "\n   Mostrando todas las partial_sums (verificación):\n";
     for (int i = 0; i < NPE; i++) {
         double sum = memoria.readDouble(config.addr_partial_sums_base + i * config.partial_sum_stride);
         std::cout << "   partial_sums[" << i << "] (PE" << i << ") = " << sum << "\n";
-        resultado_paralelo += sum;
     }
-    std::cout << "\n";
+    double resultado_final_mem = memoria.readDouble(addr_resultado_final);
+    std::cout << "   Resultado final (memoria) = " << resultado_final_mem << "\n\n";
+    
+    double resultado_paralelo = suma_final;
     
     // ===== PASO 8: Validar =====
     std::cout << "9. Validando resultado...\n";
