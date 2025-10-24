@@ -1,0 +1,1419 @@
+## Explicación Completa del Código de Caché (cache.hpp y cache.cpp)
+
+---
+
+# **PARTE 1: ESTRUCTURA Y CONSTANTES (cache.hpp)**
+
+---
+
+## **1.1 Interfaz de Memoria Principal**
+
+```cpp
+struct IMainMemory {
+  virtual ~IMainMemory() = default;
+  virtual void read64(uint64_t addr, uint64_t& out) = 0;
+  virtual void write64(uint64_t addr, uint64_t value) = 0;
+};
+```
+
+**Propósito:**
+- Interfaz abstracta (clase base) para la memoria principal
+- Define el "contrato" que debe cumplir cualquier memoria
+- Permite desacoplar la caché de la implementación específica de memoria
+
+**¿Por qué `virtual`?**
+- Permite **polimorfismo**: la caché puede trabajar con cualquier implementación de memoria
+- `= 0` significa "pura virtual" → las clases derivadas DEBEN implementar estos métodos
+
+**Uso:**
+```cpp
+// MainMemory implementa esta interfaz
+// MainMemoryAdapter adapta MainMemory a esta interfaz
+IMainMemory& mem_;  // La caché solo conoce esta interfaz
+```
+
+---
+
+## **1.2 Constantes de Configuración**
+
+```cpp
+class Cache2Way : public IBusClient {
+public:
+  static constexpr uint32_t LINE_SIZE_BYTES = 32;     // 32 B
+  static constexpr uint32_t NUM_LINES       = 16;     // total lines
+  static constexpr uint32_t WAYS            = 2;      // 2-way
+  static constexpr uint32_t SETS            = NUM_LINES / WAYS; // 8 sets
+```
+
+**Desglose:**
+
+```cpp
+LINE_SIZE_BYTES = 32
+```
+- Cada línea guarda **32 bytes contiguos** de memoria
+- Equivale a 4 palabras de 64 bits (4 × 8 = 32)
+- Razón: aprovecha **localidad espacial** (datos cercanos se usan juntos)
+
+```cpp
+NUM_LINES = 16
+```
+- Total de líneas en la caché
+- 16 líneas × 32 bytes = **512 bytes de capacidad total**
+
+```cpp
+WAYS = 2
+```
+- Asociatividad de 2 vías
+- En cada set hay 2 posibles ubicaciones para una línea
+- Reduce conflictos (menos misses que caché directa)
+
+```cpp
+SETS = NUM_LINES / WAYS = 16 / 2 = 8
+```
+- 8 conjuntos (sets)
+- Cada dirección mapea a exactamente 1 set
+- Dentro del set, puede ir en cualquiera de las 2 vías
+
+**Visualización:**
+```
+┌─────────┬─────────┐
+│  WAY 0  │  WAY 1  │  ← SET 0
+├─────────┼─────────┤
+│  WAY 0  │  WAY 1  │  ← SET 1
+├─────────┼─────────┤
+│  WAY 0  │  WAY 1  │  ← SET 2
+├─────────┼─────────┤
+   ...      ...
+├─────────┼─────────┤
+│  WAY 0  │  WAY 1  │  ← SET 7
+└─────────┴─────────┘
+   16 líneas totales
+```
+
+---
+
+```cpp
+static constexpr uint32_t OFFSET_BITS     = 5;      // log2(32) = 5
+static constexpr uint32_t INDEX_BITS      = 3;      // log2(8)  = 3
+static constexpr uint64_t OFFSET_MASK     = (1ull << OFFSET_BITS) - 1;
+static constexpr uint64_t INDEX_MASK      = (1ull << INDEX_BITS) - 1;
+```
+
+**Ya explicado anteriormente, resumen:**
+- `OFFSET_BITS = 5`: Para direccionar 32 bytes (2^5 = 32)
+- `INDEX_BITS = 3`: Para seleccionar entre 8 sets (2^3 = 8)
+- Máscaras para extraer bits específicos de direcciones
+
+```cpp
+static constexpr uint32_t WORD_SIZE       = 8;      // 8 B (64 bits)
+static constexpr uint32_t WORDS_PER_LINE  = LINE_SIZE_BYTES / WORD_SIZE;
+                                                     // = 32 / 8 = 4 palabras
+```
+
+---
+
+## **1.3 Enum MESI**
+
+```cpp
+enum class MESI : uint8_t { I=0, S, E, M };
+```
+
+**Estados de Coherencia:**
+
+| Estado | Nombre | Significado | Dirty | Compartido |
+|--------|---------|-------------|-------|------------|
+| **I** | Invalid | Línea no válida / no existe | No | - |
+| **S** | Shared | Copia válida, solo lectura, otras cachés pueden tenerla | No | Sí |
+| **E** | Exclusive | Única copia válida, sin modificar | No | No |
+| **M** | Modified | Única copia, modificada (más reciente que memoria) | Sí | No |
+
+**Transiciones típicas:**
+```
+       LOAD (solo yo)
+I ─────────────────────→ E
+       LOAD (compartido)
+I ─────────────────────→ S
+       STORE
+E ─────────────────────→ M
+       Otro PE hace LOAD
+M ─────────────────────→ S (con flush)
+       Otro PE hace STORE
+S ─────────────────────→ I (invalidación)
+```
+
+---
+
+## **1.4 Estructura Stats**
+
+```cpp
+struct Stats {
+  // caché
+  uint64_t hits        = 0;  // Accesos que encuentran dato en caché
+  uint64_t misses      = 0;  // Accesos que deben ir a memoria
+  uint64_t line_fills  = 0;  // Líneas traídas desde memoria
+  uint64_t writebacks  = 0;  // Líneas sucias escritas a memoria
+  uint64_t mem_reads   = 0;  // Lecturas de palabras desde memoria
+  uint64_t mem_writes  = 0;  // Escrituras de palabras a memoria
+  
+  // bus
+  uint64_t bus_rd      = 0;  // Mensajes BusRd enviados
+  uint64_t bus_rdx     = 0;  // Mensajes BusRdX enviados
+  uint64_t bus_inv     = 0;  // Mensajes Invalidate enviados
+  
+  // snoops
+  uint64_t snoop_to_I  = 0;  // Transiciones a Invalid por snoop
+  uint64_t snoop_to_S  = 0;  // Transiciones a Shared por snoop
+  uint64_t snoop_flush = 0;  // Flushes forzados por snoop
+};
+```
+
+**Propósito:** Métricas para analizar el desempeño y comportamiento del sistema.
+
+**Ejemplo de uso:**
+```cpp
+auto stats = cache0.getStats();
+double hit_rate = (double)stats.hits / (stats.hits + stats.misses);
+// hit_rate = 0.85 → 85% de hits (muy bueno)
+```
+
+---
+
+## **1.5 Constructor**
+
+```cpp
+explicit Cache2Way(IMainMemory& mem) : mem_(mem) {}
+```
+
+**`explicit`:** Previene conversiones implícitas accidentales
+```cpp
+// Sin explicit:
+Cache2Way c = adapter;  // ✗ Permitido (confuso)
+
+// Con explicit:
+Cache2Way c(adapter);   // ✓ Solo esta forma
+```
+
+**Inicialización:** `mem_(mem)` guarda referencia a la memoria
+
+---
+
+## **1.6 Métodos Públicos**
+
+```cpp
+void setId(int id);
+void setBus(Interconnect* b);
+```
+
+**Configuración inicial:**
+- `setId()`: Asigna identificador para logs (C0, C1, C2, C3)
+- `setBus()`: Conecta al bus de interconexión (para MESI)
+
+---
+
+```cpp
+bool load64(uint64_t addr, uint64_t& out);
+bool store64(uint64_t addr, uint64_t value);
+bool loadDouble(uint64_t addr, double& out);
+bool storeDouble(uint64_t addr, double value);
+```
+
+**Operaciones principales:**
+- `load64/store64`: Accesos de enteros de 64 bits
+- `loadDouble/storeDouble`: Accesos de punto flotante
+- Retornan `true` si **HIT**, `false` si **MISS**
+
+---
+
+```cpp
+void flushAll();
+void invalidateAll();
+void resetStats();
+Stats getStats() const;
+void dump(std::ostream& os) const;
+```
+
+**Mantenimiento:**
+- `flushAll()`: Escribe todas las líneas sucias a memoria
+- `invalidateAll()`: Marca todas las líneas como inválidas
+- `resetStats()`: Reinicia contadores
+- `getStats()`: Obtiene copia de estadísticas
+- `dump()`: Imprime estado completo de la caché
+
+---
+
+```cpp
+std::optional<MESI> getLineMESI(uint64_t addr) const;
+```
+
+**Consulta de estado:**
+- Retorna el estado MESI de una dirección específica
+- `std::optional`: puede no existir la línea (retorna vacío)
+
+```cpp
+auto state = cache0.getLineMESI(0x0000);
+if (state && *state == MESI::M) {
+    cout << "Línea modificada en cache0\n";
+}
+```
+
+---
+
+```cpp
+void snoop(BusMsg msg, uint64_t base_addr) override;
+```
+
+**Coherencia:**
+- Implementa `IBusClient` interface
+- Recibe mensajes del bus de otras cachés
+- Reacciona según protocolo MESI
+
+---
+
+## **1.7 Estructura Interna: Line**
+
+```cpp
+struct Line {
+  uint64_t tag    = 0;      // Identifica el bloque de memoria
+  bool     valid  = false;  // ¿Contiene datos válidos?
+  bool     dirty  = false;  // ¿Fue modificado? (write-back)
+  MESI     mesi   = MESI::I;// Estado de coherencia
+  uint64_t last_use = 0;    // Timestamp para LRU
+  std::array<uint8_t, LINE_SIZE_BYTES> data{};  // 32 bytes de datos
+};
+```
+
+**Anatomía completa de una línea:**
+
+```
+┌──────────────────────────────────────────────┐
+│ Tag: 0x00000000000002A                       │ ← Identifica bloque único
+├──────────────────────────────────────────────┤
+│ Valid: true  Dirty: true  MESI: M            │ ← Estado
+├──────────────────────────────────────────────┤
+│ Last_use: 1052                               │ ← Para LRU
+├──────────────────────────────────────────────┤
+│ Data[32 bytes]:                              │
+│   [0-7]:   0x4000000000000000 (double: 2.0) │
+│   [8-15]:  0x4008000000000000 (double: 3.0) │
+│   [16-23]: 0x4010000000000000 (double: 4.0) │
+│   [24-31]: 0x4014000000000000 (double: 5.0) │
+└──────────────────────────────────────────────┘
+```
+
+---
+
+## **1.8 Estructura: Set**
+
+```cpp
+struct Set { 
+  std::array<Line, WAYS> ways;  // 2 líneas (way 0, way 1)
+};
+```
+
+**Organización:**
+```cpp
+Set set0;
+set0.ways[0];  // Way 0 del set 0
+set0.ways[1];  // Way 1 del set 0
+```
+
+---
+
+## **1.9 Funciones de Direccionamiento**
+
+```cpp
+static inline uint64_t lineBase(uint64_t addr) { 
+  return addr & ~OFFSET_MASK; 
+}
+```
+
+**Propósito:** Obtener dirección base de la línea (sin el offset)
+
+```cpp
+uint64_t addr = 0x0108;
+//               ...00100001000
+uint64_t base = lineBase(addr);
+//               ...00100000000 = 0x0100
+// Elimina los últimos 5 bits → dirección alineada a 32 bytes
+```
+
+---
+
+```cpp
+static inline uint32_t offset(uint64_t addr) { 
+  return static_cast<uint32_t>(addr & OFFSET_MASK); 
+}
+```
+
+**Propósito:** Extraer posición dentro de la línea (0-31)
+
+```cpp
+uint32_t off = offset(0x0108);  // 8 (byte 8 de la línea)
+```
+
+---
+
+```cpp
+static inline uint32_t index(uint64_t addr) { 
+  return static_cast<uint32_t>((addr >> OFFSET_BITS) & INDEX_MASK); 
+}
+```
+
+**Propósito:** Determinar a qué set pertenece
+
+```cpp
+uint32_t idx = index(0x0108);  // 1 (SET 1)
+```
+
+---
+
+```cpp
+static inline uint64_t tag(uint64_t addr) { 
+  return addr >> (OFFSET_BITS + INDEX_BITS); 
+}
+```
+
+**Propósito:** Extraer identificador único del bloque
+
+```cpp
+uint64_t t = tag(0x0108);  // 0x01
+```
+
+---
+
+```cpp
+static inline uint32_t wordOffset(uint64_t addr) { 
+  return static_cast<uint32_t>((offset(addr)) / WORD_SIZE); 
+}
+```
+
+**Propósito:** Calcular índice de palabra (0-3) dentro de la línea
+
+```cpp
+uint32_t word = wordOffset(0x0108);
+// offset = 8, WORD_SIZE = 8
+// word = 8/8 = 1 (segunda palabra de 64 bits)
+```
+
+---
+
+## **1.10 Métodos Privados de Búsqueda**
+
+```cpp
+std::optional<uint32_t> findHit(uint32_t set_idx, uint64_t tag) const;
+```
+
+**Propósito:** Buscar si una línea con el tag existe en el set
+
+**Implementación:**
+```cpp
+std::optional<uint32_t> Cache2Way::findHit(uint32_t set_idx, uint64_t tg) const {
+  const auto& S = sets_[set_idx];  // Obtener el set
+  
+  for (uint32_t w = 0; w < WAYS; ++w) {  // Revisar ambas vías
+    const auto& L = S.ways[w];
+    if (L.valid && L.tag == tg) return w;  // ¡Encontrado!
+  }
+  
+  return std::nullopt;  // No encontrado
+}
+```
+
+**Ejemplo de uso:**
+```cpp
+if (auto hit = findHit(1, 0x2A)) {
+  // HIT en way *hit
+  cout << "HIT en way " << *hit << "\n";
+} else {
+  // MISS
+  cout << "MISS\n";
+}
+```
+
+---
+
+```cpp
+uint32_t chooseVictim(uint32_t set_idx) const;
+```
+
+**Propósito:** Seleccionar qué línea reemplazar (política LRU)
+
+**Implementación:**
+```cpp
+uint32_t Cache2Way::chooseVictim(uint32_t set_idx) const {
+  const auto& S = sets_[set_idx];
+  
+  // 1. Preferir líneas inválidas (espacios libres)
+  for (uint32_t w = 0; w < WAYS; ++w) {
+    if (!S.ways[w].valid) return w;
+  }
+  
+  // 2. Si todo está ocupado, usar LRU (menor last_use)
+  uint32_t victim = 0;
+  uint64_t oldest = S.ways[0].last_use;
+  
+  for (uint32_t w = 1; w < WAYS; ++w) {
+    if (S.ways[w].last_use < oldest) {
+      oldest = S.ways[w].last_use;
+      victim = w;
+    }
+  }
+  
+  return victim;
+}
+```
+
+**Ejemplo:**
+```
+SET 2:
+  Way 0: last_use = 1000  ← Más antiguo (víctima)
+  Way 1: last_use = 1050
+
+chooseVictim(2) → 0
+```
+
+---
+
+## **1.11 Métodos de Manejo de Líneas**
+
+```cpp
+void fetchLine(uint32_t set_idx, uint32_t way_idx, 
+               uint64_t base_addr, uint64_t tg);
+```
+
+**Propósito:** Traer una línea completa desde memoria
+
+**Implementación:**
+```cpp
+void Cache2Way::fetchLine(uint32_t set_idx, uint32_t way_idx, 
+                          uint64_t base_addr, uint64_t tg) {
+  auto& L = sets_[set_idx].ways[way_idx];
+  
+  // 1. Si la víctima está sucia, escribirla primero
+  if (L.valid && L.dirty) {
+    uint64_t old_base = /* calcular dirección base antigua */;
+    writeBackIfDirty(set_idx, way_idx, old_base);
+  }
+  
+  // 2. Traer 32 bytes como 4 palabras de 64 bits
+  for (uint32_t i = 0; i < WORDS_PER_LINE; ++i) {  // i = 0,1,2,3
+    uint64_t v = 0;
+    mem_.read64(base_addr + i * WORD_SIZE, v);  // Leer cada palabra
+    stats_.mem_reads++;
+    writeWordInLine(L, i, v);  // Escribir en caché
+  }
+  
+  // 3. Actualizar metadatos
+  L.tag     = tg;
+  L.valid   = true;
+  L.dirty   = false;
+  L.last_use = ++use_tick_;
+  stats_.line_fills++;
+}
+```
+
+**Visualización:**
+```
+Memoria (dirección 0x0100):
+┌────┬────┬────┬────┐
+│ P0 │ P1 │ P2 │ P3 │  4 palabras de 64 bits
+└────┴────┴────┴────┘
+  │    │    │    │
+  └────┴────┴────┴──→ Traer a caché
+  
+Caché SET 1, WAY 0:
+┌────┬────┬────┬────┐
+│ P0 │ P1 │ P2 │ P3 │  Línea completa copiada
+└────┴────┴────┴────┘
+```
+
+---
+
+```cpp
+void writeBackIfDirty(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr);
+```
+
+**Propósito:** Escribir línea sucia a memoria (write-back)
+
+**Implementación:**
+```cpp
+void Cache2Way::writeBackIfDirty(uint32_t set_idx, uint32_t way_idx, 
+                                  uint64_t base_addr) {
+  auto& L = sets_[set_idx].ways[way_idx];
+  
+  if (L.valid && L.dirty) {  // Solo si está modificada
+    // Escribir las 4 palabras a memoria
+    for (uint32_t i = 0; i < WORDS_PER_LINE; ++i) {
+      uint64_t w = readWordInLine(L, i);
+      mem_.write64(base_addr + i * WORD_SIZE, w);
+      stats_.mem_writes++;
+    }
+    stats_.writebacks++;
+    L.dirty = false;  // Ya no está sucia
+  }
+}
+```
+
+---
+
+## **1.12 Helpers de Lectura/Escritura en Línea**
+
+```cpp
+static inline uint64_t readWordInLine(const Line& L, uint32_t word_off) {
+  uint64_t v = 0;
+  std::memcpy(&v, &L.data[word_off * WORD_SIZE], WORD_SIZE);
+  return v;
+}
+```
+
+**Propósito:** Leer una palabra de 64 bits de la línea
+
+```cpp
+// Línea con datos:
+Line L;
+L.data = [byte0, byte1, ..., byte31];
+
+// Leer palabra 1 (bytes 8-15):
+uint64_t val = readWordInLine(L, 1);
+//                                └─ word_off=1 → offset=8
+// memcpy extrae 8 bytes desde L.data[8]
+```
+
+---
+
+```cpp
+static inline void writeWordInLine(Line& L, uint32_t word_off, uint64_t v) {
+  std::memcpy(&L.data[word_off * WORD_SIZE], &v, WORD_SIZE);
+}
+```
+
+**Propósito:** Escribir una palabra de 64 bits en la línea
+
+```cpp
+writeWordInLine(L, 2, 0x4010000000000000);
+// Escribe en bytes 16-23 de L.data
+```
+
+---
+
+## **1.13 Helpers MESI**
+
+```cpp
+int findLineByBase(uint64_t base_addr) const;
+```
+
+**Propósito:** Buscar línea por su dirección base (para snooping)
+
+```cpp
+int Cache2Way::findLineByBase(uint64_t base_addr) const {
+  const uint32_t set_idx = index(base_addr);
+  const uint64_t tg      = tag(base_addr);
+  const auto& S = sets_[set_idx];
+  
+  for (uint32_t w = 0; w < WAYS; ++w) {
+    const auto& L = S.ways[w];
+    if (L.valid && L.tag == tg) return (int)w;  // Encontrada
+  }
+  
+  return -1;  // No tengo esta línea
+}
+```
+
+---
+
+```cpp
+static const char* mesiName(MESI m);
+```
+
+**Propósito:** Convertir enum MESI a string para logs
+
+```cpp
+cout << "Estado: " << mesiName(MESI::M) << "\n";  // "M"
+```
+
+---
+
+```cpp
+inline void emit(BusMsg m, uint64_t base_addr);
+```
+
+**Propósito:** Enviar mensaje al bus e incrementar estadísticas
+
+**Implementación:**
+```cpp
+inline void emit(BusMsg m, uint64_t base_addr) {
+  if (!bus_) return;  // Sin bus conectado
+  
+  // Actualizar contadores
+  switch (m) {
+    case BusMsg::BusRd:       stats_.bus_rd++;  break;
+    case BusMsg::BusRdX:      stats_.bus_rdx++; break;
+    case BusMsg::Invalidate:  stats_.bus_inv++; break;
+    default: break;
+  }
+  
+  // Log en consola
+  std::cout << "[BUS] "
+            << (m == BusMsg::BusRd ? "BusRd" :
+               m == BusMsg::BusRdX ? "BusRdX" : "Invalidate")
+            << " emitido por C" << id_
+            << " (linea base 0x" << std::hex << base_addr << std::dec << ")\n";
+  
+  // Difundir a otras cachés
+  bus_->broadcast(this, m, base_addr);
+}
+```
+
+---
+
+## **1.14 Miembros Privados**
+
+```cpp
+IMainMemory& mem_;                    // Referencia a memoria principal
+mutable std::mutex mtx_;              // Mutex para thread-safety
+std::array<Set, SETS> sets_{};        // 8 sets con 2 ways cada uno
+mutable uint64_t use_tick_ = 0;       // Contador global para LRU
+Stats stats_{};                        // Estadísticas acumuladas
+Interconnect* bus_ = nullptr;         // Puntero al bus
+int id_ = -1;                         // ID de la caché (para logs)
+```
+
+---
+
+# **PARTE 2: IMPLEMENTACIÓN DE OPERACIONES (cache.cpp)**
+
+---
+
+## **2.1 Operación LOAD (Lectura)**
+
+```cpp
+bool Cache2Way::load64(uint64_t addr, uint64_t& out);
+```
+
+### **Flujo Completo:**
+
+```cpp
+bool Cache2Way::load64(uint64_t addr, uint64_t& out) {
+  // ===== VALIDACIÓN =====
+  if (addr % WORD_SIZE != 0)
+    throw std::invalid_argument("Cache64 load: dirección no alineada");
+```
+
+**Verifica que la dirección sea múltiplo de 8.**
+
+---
+
+```cpp
+  // ===== VARIABLES LOCALES =====
+  uint32_t set_idx, woff, victim;
+  uint64_t base, tg;
+  bool is_miss = false;
+```
+
+---
+
+```cpp
+  // ===== FASE 1: HIT/MISS CON MUTEX =====
+  {
+    std::scoped_lock lk(mtx_);  // Bloquea para thread-safety
+    
+    // Decodificar dirección
+    set_idx = index(addr);      // ¿Qué set?
+    woff = wordOffset(addr);    // ¿Qué palabra dentro de la línea?
+    base = lineBase(addr);      // Dirección base de la línea
+    tg = tag(addr);             // Tag único del bloque
+```
+
+**Ejemplo:**
+```
+addr = 0x0108
+set_idx = 1, woff = 1, base = 0x0100, tg = 0x01
+```
+
+---
+
+```cpp
+    // Buscar HIT
+    if (auto h = findHit(set_idx, tg)) {
+      // ¡HIT! La línea ya está en caché
+      auto& L = sets_[set_idx].ways[*h];
+      L.last_use = ++use_tick_;          // Actualizar LRU
+      out = readWordInLine(L, woff);     // Leer palabra
+      stats_.hits++;
+      return true;  // Salir temprano
+    }
+```
+
+**Si encuentra la línea:**
+```
+SET 1, WAY 0: tag=0x01, valid=true  ← MATCH!
+→ Leer palabra 1 desde esta línea
+→ HIT (rápido, ~1 ciclo)
+```
+
+---
+
+```cpp
+    // Es MISS
+    is_miss = true;
+    victim = chooseVictim(set_idx);  // Elegir víctima LRU
+  }
+  // Mutex liberado aquí
+```
+
+**Si NO encuentra:**
+```
+SET 1:
+  WAY 0: tag=0x00 (no coincide)
+  WAY 1: tag=0x45 (no coincide)
+→ MISS, necesita traer de memoria
+→ Elegir víctima (ej: WAY 0 con LRU más antiguo)
+```
+
+---
+
+```cpp
+  // ===== FASE 2: EMITIR AL BUS SIN MUTEX =====
+  if (is_miss) {
+    emit(BusMsg::BusRd, base);  // Notificar a otras cachés
+  }
+```
+
+**Protocolo MESI:**
+- `BusRd` = "Voy a leer, ¿alguien tiene este bloque?"
+- Otras cachés reaccionan:
+  - Si tienen en M → flush y bajar a S
+  - Si tienen en E → bajar a S
+  - Si tienen en S → mantener S
+
+---
+
+```cpp
+  // ===== FASE 3: FETCH Y ACTUALIZACIÓN CON MUTEX =====
+  {
+    std::scoped_lock lk(mtx_);
+    
+    // Traer línea desde memoria
+    fetchLine(set_idx, victim, base, tg);
+    
+    auto& L = sets_[set_idx].ways[victim];
+    L.mesi = MESI::S;  // Estado Shared (lectura)
+    
+    // Leer la palabra solicitada
+    out = readWordInLine(L, woff);
+    stats_.misses++;
+  }
+  
+  return false;  // Fue MISS
+}
+```
+
+**Resultado:**
+```
+SET 1, WAY 0:
+  Tag: 0x01
+  Valid: true
+  MESI: S  ← Estado de lectura compartida
+  Data: [32 bytes traídos de memoria]
+
+out = palabra 1 de esta línea
+```
+
+---
+
+### **Visualización Completa del LOAD:**
+
+```
+LOAD 0x0108:
+
+1. Decodificar:
+   set=1, tag=0x01, offset=8, word=1
+
+2. Buscar en SET 1:
+   WAY 0: tag=0x00 ✗
+   WAY 1: tag=0x45 ✗
+   → MISS
+
+3. Elegir víctima:
+   WAY 0: LRU=1000 ← Más antiguo (elegido)
+   WAY 1: LRU=1050
+
+4. Emitir BusRd(0x0100):
+   [BUS] BusRd emitido por C0 (linea base 0x100)
+   → Otras cachés reaccionan
+
+5. Traer línea:
+   mem.read64(0x0100) → palabra 0
+   mem.read64(0x0108) → palabra 1
+   mem.read64(0x0110) → palabra 2
+   mem.read64(0x0118) → palabra 3
+
+6. Actualizar WAY 0:
+   tag=0x01, valid=true, mesi=S, dirty=false
+
+7. Leer palabra 1:
+   out = 0x4008000000000000 (3.0)
+
+8. Retornar false (MISS)
+```
+
+---
+
+## **2.2 Operación STORE (Escritura)**
+
+```cpp
+bool Cache2Way::store64(uint64_t addr, uint64_t value);
+```
+
+### **Flujo Completo:**
+
+```cpp
+bool Cache2Way::store64(uint64_t addr, uint64_t value) {
+  if (addr % WORD_SIZE != 0)
+    throw std::invalid_argument("Cache64 store: dirección no alineada");
+  
+  uint32_t set_idx, woff, victim;
+  uint64_t base, tg;
+  bool is_hit = false;
+  bool need_upgrade = false;
+  bool need_fetch = false;
+  MESI old_state;
+```
+
+---
+
+```cpp
+  // ===== FASE 1: VERIFICAR HIT/MISS CON MUTEX =====
+  {
+    std::scoped_lock lk(mtx_);
+    
+    set_idx = index(addr);
+    woff = wordOffset(addr);
+    base = lineBase(addr);
+    tg = tag(addr);
+    
+    if (auto h = findHit(set_idx, tg)) {
+      // ¡HIT! Línea presente
+      auto& L = sets_[set_idx].ways[*h];
+      old_state = L.mesi;
+```
+
+---
+
+### **Caso 1: HIT en estado S (Shared)**
+
+```cpp
+      if (L.mesi == MESI::S) {
+        need_upgrade = true;  // Necesito exclusividad
+      }
+```
+
+**Razón:**
+- Tengo la línea pero es solo lectura
+- Otras cachés también la tienen
+- Debo invalidar las copias antes de escribir
+
+**Acción:** Emitir `BusRdX` (solicitar exclusividad)
+
+---
+
+### **Caso 2: HIT en estado E (Exclusive)**
+
+```cpp
+      else if (L.mesi == MESI::E) {
+        L.mesi = MESI::M;  // Transición directa E→M
+      }
+```
+
+**Razón:**
+- Soy el único con la línea
+- No necesito avisar al bus
+- Simplemente marco como modificada
+
+---
+
+### **Caso 3: HIT en estado M (Modified)**
+
+```cpp
+      // Si ya está en M, no hace falta cambiar nada
+```
+
+**Razón:** Ya tengo ownership exclusivo y modificado
+
+---
+
+```cpp
+      // Escribir el valor
+      writeWordInLine(L, woff, value);
+      L.dirty = true;
+      L.last_use = ++use_tick_;
+      stats_.hits++;
+      is_hit = true;
+```
+
+---
+
+### **Caso 4: MISS**
+
+```cpp
+    } else {
+      // No tengo la línea
+      need_fetch = true;
+      victim = chooseVictim(set_idx);
+    }
+  }
+  // Mutex liberado
+```
+
+---
+
+```cpp
+  // ===== FASE 2: EMITIR AL BUS SIN MUTEX =====
+  
+  // Upgrade S→M
+  if (need_upgrade) {
+    emit(BusMsg::BusRdX, base);  // Invalidar otras cachés
+    
+    std::scoped_lock lk(mtx_);
+    if (auto h = findHit(set_idx, tg)) {
+      sets_[set_idx].ways[*h].mesi = MESI::M;
+    }
+    return true;  // Fue HIT con upgrade
+  }
+```
+
+**`BusRdX`:**
+- "Voy a escribir, necesito exclusividad"
+- Todas las otras cachés → Invalidate (I)
+
+---
+
+```cpp
+  // MISS: traer con exclusividad
+  if (need_fetch) {
+    emit(BusMsg::BusRdX, base);  // Traer en exclusivo
+    
+    std::scoped_lock lk(mtx_);
+    fetchLine(set_idx, victim, base, tg);
+    
+    auto& L = sets_[set_idx].ways[victim];
+    writeWordInLine(L, woff, value);  // Escribir valor
+    L.dirty = true;
+    L.mesi = MESI::M;  // Estado Modified
+    L.last_use = ++use_tick_;
+    stats_.misses++;
+    return false;  // Fue MISS
+  }
+  
+  return is_hit;
+}
+```
+
+---
+
+### **Transiciones MESI en STORE:**
+
+```
+Estado Inicial → Acción → Estado Final
+
+I (Invalid) → MISS + BusRdX → M (Modified)
+   [No tengo → Traer en exclusivo → Modificar]
+
+S (Shared) → HIT + BusRdX → M (Modified)
+   [Compartida → Upgrade → Exclusiva modificada]
+
+E (Exclusive) → HIT (sin bus) → M (Modified)
+   [Exclusiva limpia → Marcar sucia]
+
+M (Modified) → HIT (sin bus) → M (Modified)
+   [Ya modificada → Seguir modificada]
+```
+
+---
+
+### **Ejemplo Completo de STORE:**
+
+```
+STORE 0x0108, valor=5.0
+
+Caso 1: Línea en estado S
+───────────────────────────
+1. HIT en SET 1, WAY 0 (MESI=S)
+2. need_upgrade = true
+3. emit(BusRdX, 0x0100)
+   → C1 snoop: S→I (invalida su copia)
+   → C2 snoop: S→I (invalida su copia)
+4. C0: S→M, dirty=true
+5. Escribir 5.0 en palabra 1
+6. return true (HIT)
+
+Caso 2: MISS
+────────────
+1. No encontrada en SET 1
+2. Elegir víctima: WAY 0
+3. emit(BusRdX, 0x0100)
+   → Otras cachés invalidan si tienen
+4. fetchLine() trae 32 bytes
+5. Escribir 5.0 en palabra 1
+6. MESI=M, dirty=true
+7. return false (MISS)
+```
+
+---
+
+## **2.3 Wrappers para Double**
+
+```cpp
+bool Cache2Way::loadDouble(uint64_t addr, double& out) {
+  uint64_t bits = 0;
+  bool hit = load64(addr, bits);  // Leer como uint64_t
+  std::memcpy(&out, &bits, sizeof(bits));  // Convertir a double
+  return hit;
+}
+```
+
+**Propósito:** Permitir accesos de punto flotante sin duplicar lógica
+
+```cpp
+bool Cache2Way::storeDouble(uint64_t addr, double value) {
+  uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));  // Convertir a uint64_t
+  return store64(addr, bits);  // Escribir como uint64_t
+}
+```
+
+---
+
+## **2.4 Snooping (Coherencia MESI)**
+
+```cpp
+void Cache2Way::snoop(BusMsg msg, uint64_t base_addr) {
+  std::scoped_lock lk(mtx_);
+  
+  // Buscar si tengo esta línea
+  const uint32_t set_idx = index(base_addr);
+  int w = findLineByBase(base_addr);
+  if (w < 0) return;  // No la tengo, ignorar
+  
+  auto& L = sets_[set_idx].ways[w];
+```
+
+---
+
+### **Helper: Flush**
+
+```cpp
+  auto do_flush = [&](){
+    for (uint32_t i=0; i<WORDS_PER_LINE; ++i) {
+      uint64_t v = readWordInLine(L, i);
+      mem_.write64(base_addr + i*WORD_SIZE, v);
+      stats_.mem_writes++;
+    }
+    stats_.writebacks++;
+    stats_.snoop_flush++;
+  };
+```
+
+**Propósito:** Escribir línea modificada a memoria cuando otra caché la necesita
+
+---
+
+### **Reacción a BusRd**
+
+```cpp
+  switch (msg) {
+    case BusMsg::BusRd:
+      // Otro PE quiere leer
+      
+      if (L.mesi == MESI::M) {
+        // Tengo la copia modificada más reciente
+        do_flush();           // Escribir a memoria
+        L.dirty = false;
+        L.mesi = MESI::S;     // Bajar a Shared
+      }
+      else if (L.mesi == MESI::E) {
+        L.mesi = MESI::S;     // Bajar a Shared
+        stats_.snoop_to_S++;
+      }
+      // Si estoy en S o I, no hago nada
+      break;
+```
+
+**Lógica:**
+```
+M → flush + S  (proporcionar dato, compartir)
+E → S          (ahora somos 2 con el dato)
+S → S          (ya compartida, no cambia)
+I → I          (no la tengo, ignoro)
+```
+
+---
+
+### **Reacción a BusRdX**
+
+```cpp
+    case BusMsg::BusRdX:
+      // Otro PE quiere escribir (necesita exclusividad)
+      
+      if (L.mesi == MESI::M) {
+        do_flush();           // Escribir versión modificada
+        L.dirty = false;
+      }
+      
+      if (L.mesi != MESI::I) {
+        L.mesi = MESI::I;     // Invalidar mi copia
+        L.valid = false;
+        stats_.snoop_to_I++;
+      }
+      break;
+```
+
+**Lógica:**
+```
+M → flush + I  (dar dato actualizado, invalidar)
+E → I          (invalidar)
+S → I          (invalidar)
+I → I          (ya inválida)
+```
+
+---
+
+### **Reacción a Invalidate**
+
+```cpp
+    case BusMsg::Invalidate:
+      // Otro PE me ordena invalidar
+      
+      if (L.mesi == MESI::M) {
+        do_flush();  // Por seguridad
+        L.dirty = false;
+      }
+      
+      if (L.mesi != MESI::I) {
+        L.mesi = MESI::I;
+        L.valid = false;
+        stats_.snoop_to_I++;
+      }
+      break;
+```
+
+---
+
+### **Ejemplo de Snooping:**
+
+```
+Estado Inicial:
+  C0: 0x0100 en estado M (modificada)
+  C1: 0x0100 en estado I (no la tiene)
+  C2: 0x0100 en estado S (compartida)
+
+Evento: C1 ejecuta LOAD 0x0100
+────────────────────────────────
+1. C1: MISS → emit(BusRd, 0x0100)
+
+2. C0 snoop(BusRd, 0x0100):
+   - Estado: M
+   - Acción: do_flush() (escribir a memoria)
+   - Estado: M→S
+   
+3. C2 snoop(BusRd, 0x0100):
+   - Estado: S
+   - Acción: ninguna (ya compartida)
+   - Estado: S→S
+
+4. C1: fetchLine() desde memoria
+   - Estado: I→S
+
+Estado Final:
+  C0: 0x0100 en estado S
+  C1: 0x0100 en estado S
+  C2: 0x0100 en estado S
+  Memoria: actualizada con valor de C0
+```
+
+---
+
+## **2.5 Operaciones de Mantenimiento**
+
+### **flushAll()**
+
+```cpp
+void Cache2Way::flushAll() {
+  std::scoped_lock lk(mtx_);
+  
+  for (uint32_t s = 0; s < SETS; ++s) {
+    for (uint32_t w = 0; w < WAYS; ++w) {
+      auto& L = sets_[s].ways[w];
+      
+      if (L.valid && L.dirty) {
+        // Calcular dirección base de esta línea
+        uint64_t base = ((L.tag << (INDEX_BITS + OFFSET_BITS)) | 
+                        (static_cast<uint64_t>(s) << OFFSET_BITS));
+        writeBackIfDirty(s, w, base);
+      }
+    }
+  }
+}
+```
+
+**Propósito:** Sincronizar toda la caché con memoria
+
+**Cuándo usarlo:**
+- Antes de apagar el sistema
+- Antes de leer resultados finales de memoria
+- Para análisis de datos en memoria
+
+---
+
+### **invalidateAll()**
+
+```cpp
+void Cache2Way::invalidateAll() {
+  std::scoped_lock lk(mtx_);
+  
+  for (uint32_t s = 0; s < SETS; ++s) {
+    for (uint32_t w = 0; w < WAYS; ++w) {
+      auto& L = sets_[s].ways[w];
+      L.valid = false;
+      L.dirty = false;
+      L.mesi  = MESI::I;
+      L.tag   = 0;
+      L.last_use = 0;
+    }
+  }
+}
+```
+
+**Propósito:** Limpiar completamente la caché
+
+**Cuándo usarlo:**
+- Reset del sistema
+- Cambio de contexto
+- Entre pruebas
+
+---
+
+### **dump()**
+
+```cpp
+void Cache2Way::dump(std::ostream& os) const {
+  std::scoped_lock lk(mtx_);
+  
+  os << "Cache2Way dump (SETS=" << SETS << ", WAYS=" << WAYS << ")\n";
+  
+  for (uint32_t s = 0; s < SETS; ++s) {
+    os << "Set " << s << ":\n";
+    
+    for (uint32_t w = 0; w < WAYS; ++w) {
+      const auto& L = sets_[s].ways[w];
+      os << "  Way " << w
+         << " | V=" << L.valid
+         << " D=" << L.dirty
+         << " MESI=" << static_cast<int>(L.mesi)
+         << " Tag=0x" << std::hex << L.tag << std::dec
+         << " LRU=" << L.last_use
+         << "\n";
+    }
+  }
+  
+  // Imprimir estadísticas
+  auto st = stats_;
+  os << "Stats: hits=" << st.hits
+     << " misses=" << st.misses
+     << " fills=" << st.line_fills
+     << " wbs=" << st.writebacks
+     << " memR=" << st.mem_reads
+     << " memW=" << st.mem_writes
+     << " | busRd=" << st.bus_rd
+     << " busRdX=" << st.bus_rdx
+     << " busInv=" << st.bus_inv
+     << " | snoopI=" << st.snoop_to_I
+     << " snoopS=" << st.snoop_to_S
+     << " snoopFlush=" << st.snoop_flush
+     << "\n";
+}
+```
+
+**Salida ejemplo:**
+```
+Cache2Way dump (SETS=8, WAYS=2)
+Set 0:
+  Way 0 | V=1 D=0 MESI=2 Tag=0x2a LRU=1045
+  Way 1 | V=1 D=1 MESI=3 Tag=0x3f LRU=1052
+Set 1:
+  Way 0 | V=0 D=0 MESI=0 Tag=0x0 LRU=0
+  Way 1 | V=1 D=0 MESI=1 Tag=0x45 LRU=1048
+...
+Stats: hits=1247 misses=268 fills=268 wbs=89 memR=1072 memW=356
+| busRd=179 busRdX=89 busInv=45 | snoopI=34 snoopS=12 snoopFlush=23
+```
+
+---
+
+## **2.6 getLineMESI()**
+
+```cpp
+std::optional<Cache2Way::MESI> Cache2Way::getLineMESI(uint64_t addr) const {
+  std::scoped_lock lk(mtx_);
+  
+  const uint64_t base = lineBase(addr);
+  int w = findLineByBase(base);
+  
+  if (w < 0) return std::nullopt;  // No tengo esta línea
+  
+  const uint32_t set_idx = index(base);
+  const auto& L = sets_[set_idx].ways[w];
+  
+  if (!L.valid) return std::nullopt;
+  
+  return L.mesi;
+}
+```
+
+**Uso:**
+```cpp
+auto state = cache0.getLineMESI(0x0000);
+if (state) {
+  switch (*state) {
+    case MESI::M: cout << "Modified\n"; break;
+    case MESI::E: cout << "Exclusive\n"; break;
+    case MESI::S: cout << "Shared\n"; break;
+    case MESI::I: cout << "Invalid\n"; break;
+  }
+} else {
+  cout << "Línea no presente en caché\n";
+}
+```
+
+---
+
+# **RESUMEN FINAL**
+
+## **Flujo Típico de Operación:**
+
+```
+1. PE ejecuta LOAD/STORE
+   ↓
+2. Caché decodifica dirección (tag, index, offset)
+   ↓
+3. Busca en el set correspondiente
+   ↓
+4a. HIT: Lee/escribe directamente, actualiza LRU
+4b. MISS: Emite BusRd/BusRdX, trae línea, reemplaza víctima
+   ↓
+5. Otras cachés snoop() y reaccionan según MESI
+   ↓
+6. Retorna dato al PE
+   ↓
+7. Estadísticas actualizadas
+```
+
+## **Garantías del Sistema:**
+
+✓ **Coherencia:** Protocolo MESI asegura que nunca hay datos inconsistentes
+✓ **Thread-Safety:** Mutexes protegen estructuras compartidas
+✓ **Write-Back:** Minimiza escrituras a memoria (solo cuando necesario)
+✓ **LRU:** Mantiene datos calientes en caché
+✓ **Observabilidad:** Estadísticas y dumps para análisis
+
+Este código implementa una caché realista, completa y funcional para un sistema multiprocesador con coherencia MESI.

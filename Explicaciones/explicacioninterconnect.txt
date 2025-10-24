@@ -1,0 +1,1019 @@
+## Explicación Completa de Interconnect (Bus de Interconexión)
+
+---
+
+# **PARTE 1: CONCEPTO Y PROPÓSITO**
+
+---
+
+## **1.1 ¿Qué es el Interconnect?**
+
+El `Interconnect` es el **bus de comunicación compartido** que conecta todas las cachés del sistema multiprocesador. Actúa como el **medio de difusión** (broadcast) para implementar el protocolo de coherencia MESI.
+
+### **Analogía:**
+Imagina un **sistema de intercomunicadores** en una oficina:
+- Cada oficina (caché) tiene un intercomunicador
+- Cuando alguien habla (emite mensaje), todos escuchan (snoop)
+- El sistema central (bus) maneja quién puede hablar y cuándo
+
+---
+
+## **1.2 Responsabilidades del Interconnect**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│            FUNCIONES DEL INTERCONNECT                   │
+├─────────────────────────────────────────────────────────┤
+│ 1. Registro de cachés (attach)                         │
+│ 2. Difusión de mensajes (broadcast)                    │
+│ 3. Garantizar entrega a todos los clientes             │
+│ 4. Thread-safety en comunicaciones                     │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## **1.3 Arquitectura Visual**
+
+```
+                    SISTEMA MULTIPROCESADOR
+                            
+    PE0           PE1           PE2           PE3
+     │             │             │             │
+     ▼             ▼             ▼             ▼
+  Cache0        Cache1        Cache2        Cache3
+  (C0)          (C1)          (C2)          (C3)
+     │             │             │             │
+     └─────────────┴─────────────┴─────────────┘
+                        │
+                        ▼
+              ┌──────────────────┐
+              │   INTERCONNECT   │
+              │    (BUS MESI)    │
+              └──────────────────┘
+                        │
+                        ▼
+              ┌──────────────────┐
+              │  Shared Memory   │
+              └──────────────────┘
+```
+
+---
+
+# **PARTE 2: ANÁLISIS DEL CÓDIGO**
+
+---
+
+## **2.1 Enumeración BusMsg**
+
+```cpp
+enum class BusMsg { BusRd, BusRdX, Invalidate, Flush };
+```
+
+### **Tipos de Mensajes:**
+
+---
+
+### **BusRd (Bus Read)**
+
+```cpp
+BusMsg::BusRd
+```
+
+**Significado:** "Voy a leer un bloque, ¿alguien lo tiene?"
+
+**Cuándo se usa:**
+- LOAD que resulta en MISS
+- Necesito traer el bloque a mi caché
+
+**Efectos en otras cachés:**
+
+| Estado Origen | Acción del Snooper | Estado Final |
+|---------------|-------------------|--------------|
+| **M** (Modified) | Flush a memoria + downgrade | **S** (Shared) |
+| **E** (Exclusive) | Downgrade | **S** (Shared) |
+| **S** (Shared) | Ninguna | **S** (Shared) |
+| **I** (Invalid) | Ninguna | **I** (Invalid) |
+
+**Ejemplo:**
+```
+C0: LOAD 0x0100 (MISS)
+  → C0.emit(BusRd, 0x0100)
+    → C1 snoop: M→S (flush primero)
+    → C2 snoop: S→S (sin cambios)
+    → C3 snoop: I→I (no tiene)
+  → C0: I→S (trae línea)
+```
+
+---
+
+### **BusRdX (Bus Read Exclusive)**
+
+```cpp
+BusMsg::BusRdX
+```
+
+**Significado:** "Voy a escribir, necesito exclusividad"
+
+**Cuándo se usa:**
+- STORE que resulta en MISS
+- STORE con HIT en estado S (upgrade)
+
+**Efectos en otras cachés:**
+
+| Estado Origen | Acción del Snooper | Estado Final |
+|---------------|-------------------|--------------|
+| **M** (Modified) | Flush a memoria + invalidar | **I** (Invalid) |
+| **E** (Exclusive) | Invalidar | **I** (Invalid) |
+| **S** (Shared) | Invalidar | **I** (Invalid) |
+| **I** (Invalid) | Ninguna | **I** (Invalid) |
+
+**Ejemplo:**
+```
+C0: STORE 0x0100 (línea en S)
+  → C0.emit(BusRdX, 0x0100)
+    → C1 snoop: S→I (invalidar copia)
+    → C2 snoop: S→I (invalidar copia)
+    → C3 snoop: I→I (no tiene)
+  → C0: S→M (ahora exclusivo)
+```
+
+---
+
+### **Invalidate**
+
+```cpp
+BusMsg::Invalidate
+```
+
+**Significado:** "Invaliden sus copias de este bloque"
+
+**Cuándo se usa:**
+- Escrituras que requieren invalidar otras cachés
+- Similar a BusRdX pero más explícito
+
+**Efectos:** Todas las cachés → I
+
+---
+
+### **Flush**
+
+```cpp
+BusMsg::Flush
+```
+
+**Significado:** "Escriban sus datos sucios a memoria"
+
+**Cuándo se usa:**
+- Cuando se necesita sincronizar memoria
+- Menos común en implementación actual (implícito en otros mensajes)
+
+---
+
+## **2.2 Interfaz IBusClient**
+
+```cpp
+class IBusClient {
+public:
+  virtual ~IBusClient() = default;
+  virtual void snoop(BusMsg msg, uint64_t base_addr) = 0;
+};
+```
+
+### **Propósito:**
+
+Define el **contrato** que debe cumplir cualquier cliente del bus (las cachés).
+
+**¿Por qué una interfaz?**
+- **Polimorfismo:** El bus puede trabajar con cualquier tipo de caché
+- **Desacoplamiento:** El bus no necesita conocer detalles internos de las cachés
+- **Extensibilidad:** Puedes agregar nuevos tipos de clientes
+
+---
+
+### **Método snoop()**
+
+```cpp
+virtual void snoop(BusMsg msg, uint64_t base_addr) = 0;
+```
+
+**Parámetros:**
+- `msg`: Tipo de mensaje recibido
+- `base_addr`: Dirección base de la línea involucrada
+
+**Implementación en Cache2Way:**
+```cpp
+void Cache2Way::snoop(BusMsg msg, uint64_t base_addr) override {
+  // 1. Buscar si tengo esta línea
+  // 2. Reaccionar según mi estado MESI
+  // 3. Actualizar estado/datos según sea necesario
+}
+```
+
+---
+
+## **2.3 Clase Interconnect - Estructura**
+
+```cpp
+class Interconnect {
+public:
+  void attach(IBusClient* c);
+  void broadcast(IBusClient* src, BusMsg msg, uint64_t base_addr);
+  
+private:
+  std::mutex mx_;
+  std::vector<IBusClient*> clients_;
+};
+```
+
+---
+
+### **Miembros Privados**
+
+```cpp
+std::mutex mx_;
+```
+
+**Propósito:** Proteger acceso concurrente a la lista de clientes
+
+**¿Por qué necesario?**
+- Múltiples cachés (threads) pueden llamar `broadcast()` simultáneamente
+- Evita condiciones de carrera al acceder `clients_`
+
+---
+
+```cpp
+std::vector<IBusClient*> clients_;
+```
+
+**Propósito:** Lista de todas las cachés conectadas al bus
+
+**Contenido típico:**
+```cpp
+clients_ = { &cache0, &cache1, &cache2, &cache3 };
+```
+
+**Nota:** Son **punteros** porque:
+- Las cachés existen fuera del Interconnect
+- Solo se mantiene referencia, no ownership
+
+---
+
+## **2.4 Método attach()**
+
+```cpp
+void attach(IBusClient* c) {
+  std::scoped_lock lk(mx_);  // Thread-safe
+  clients_.push_back(c);
+}
+```
+
+### **Propósito:**
+Registrar una caché en el bus para que pueda recibir mensajes.
+
+---
+
+### **Flujo de Uso:**
+
+```cpp
+// En main_dotproduct.cpp:
+
+Interconnect bus;                // 1. Crear bus vacío
+
+Cache2Way cache0(adapter);       // 2. Crear cachés
+Cache2Way cache1(adapter);
+Cache2Way cache2(adapter);
+Cache2Way cache3(adapter);
+
+// 3. Registrar cada caché en el bus
+for (auto* c : {&cache0, &cache1, &cache2, &cache3}) {
+  c->setBus(&bus);    // Caché conoce al bus
+  bus.attach(c);      // Bus conoce a la caché
+}
+```
+
+### **Estado después de attach():**
+
+```cpp
+bus.clients_ = {
+  0x7fff1000,  // Dirección de cache0
+  0x7fff2000,  // Dirección de cache1
+  0x7fff3000,  // Dirección de cache2
+  0x7fff4000   // Dirección de cache3
+};
+```
+
+---
+
+### **¿Por qué scoped_lock?**
+
+```cpp
+void attach(IBusClient* c) {
+  std::scoped_lock lk(mx_);  // ← Bloquea aquí
+  clients_.push_back(c);
+}  // ← Se desbloquea automáticamente al salir del scope
+```
+
+**Ventajas:**
+- **RAII:** Se desbloquea incluso si hay excepciones
+- **Más seguro** que lock()/unlock() manual
+- **Código más limpio**
+
+---
+
+## **2.5 Método broadcast() - El Corazón del Sistema**
+
+```cpp
+void broadcast(IBusClient* src, BusMsg msg, uint64_t base_addr) {
+  // Copiar lista de clientes bajo lock
+  std::vector<IBusClient*> targets;
+  {
+    std::scoped_lock lk(mx_);
+    targets = clients_;
+  }
+  
+  // Hacer broadcast SIN el mutex del bus
+  // Cada caché manejará su propio mutex internamente
+  for (auto* c : targets) {
+    if (c != src) {
+      c->snoop(msg, base_addr);
+    }
+  }
+}
+```
+
+---
+
+### **Análisis Línea por Línea**
+
+---
+
+#### **Paso 1: Copiar Lista de Clientes**
+
+```cpp
+std::vector<IBusClient*> targets;
+{
+  std::scoped_lock lk(mx_);
+  targets = clients_;
+}
+```
+
+**¿Por qué copiar?**
+
+❌ **Enfoque ingenuo (deadlock):**
+```cpp
+std::scoped_lock lk(mx_);  // Bloquea mutex del bus
+for (auto* c : clients_) {
+  c->snoop(...);  // snoop() bloquea mutex de la caché
+                  // Si otra caché intenta broadcast() → DEADLOCK
+}
+```
+
+✅ **Enfoque correcto:**
+```cpp
+// 1. Bloquear brevemente, copiar, desbloquear
+std::scoped_lock lk(mx_);
+targets = clients_;
+// Mutex liberado aquí
+
+// 2. Ahora hacer broadcast sin bloquear el bus
+for (auto* c : targets) {
+  c->snoop(...);  // Cada caché usa su propio mutex
+}
+```
+
+---
+
+### **Prevención de Deadlock**
+
+**Escenario problemático:**
+
+```
+Thread C0:                    Thread C1:
+├─ C0.broadcast()            ├─ C1.broadcast()
+│  ├─ lock(bus.mx_)         │  ├─ lock(bus.mx_) ← BLOQUEADO (C0 lo tiene)
+│  ├─ C1.snoop()            │  └─ esperando...
+│  │  └─ lock(C1.mtx_)      │
+│  │     ← BLOQUEADO        │
+│  │     (C1 intenta        │
+│  │      broadcast)         │
+│  └─ DEADLOCK              └─ DEADLOCK
+```
+
+**Con el enfoque de copiar:**
+
+```
+Thread C0:                    Thread C1:
+├─ C0.broadcast()            ├─ C1.broadcast()
+│  ├─ lock(bus.mx_)         │  ├─ esperando bus.mx_...
+│  ├─ copiar clients_       │  │
+│  ├─ unlock(bus.mx_)       │  ← PUEDE ADQUIRIR AHORA
+│  ├─ C1.snoop()            │  ├─ lock(bus.mx_)
+│  │  ├─ lock(C1.mtx_)     │  ├─ copiar clients_
+│  │  ├─ procesar           │  ├─ unlock(bus.mx_)
+│  │  └─ unlock(C1.mtx_)   │  └─ C0.snoop() (funciona)
+│  └─ continuar             └─ continuar
+   ✓ NO HAY DEADLOCK           ✓ NO HAY DEADLOCK
+```
+
+---
+
+#### **Paso 2: Difusión Selectiva**
+
+```cpp
+for (auto* c : targets) {
+  if (c != src) {  // ← No enviar al emisor
+    c->snoop(msg, base_addr);
+  }
+}
+```
+
+**¿Por qué `c != src`?**
+
+El emisor **ya sabe** lo que hizo, no necesita snoopear su propio mensaje.
+
+**Ejemplo:**
+```cpp
+C0 ejecuta: cache0.emit(BusRd, 0x0100)
+  ↓
+bus.broadcast(&cache0, BusRd, 0x0100)
+  ↓
+  c = &cache0 → SKIP (c == src)
+  c = &cache1 → cache1.snoop(BusRd, 0x0100) ✓
+  c = &cache2 → cache2.snoop(BusRd, 0x0100) ✓
+  c = &cache3 → cache3.snoop(BusRd, 0x0100) ✓
+```
+
+---
+
+# **PARTE 3: EJEMPLOS DE FUNCIONAMIENTO**
+
+---
+
+## **3.1 Ejemplo Completo: LOAD con MISS**
+
+### **Configuración Inicial:**
+
+```
+C0: 0x0100 → I (no tiene)
+C1: 0x0100 → M (modificada, valor=10.0)
+C2: 0x0100 → I (no tiene)
+C3: 0x0100 → I (no tiene)
+Memoria[0x0100] = 5.0 (desactualizada)
+```
+
+---
+
+### **Paso a Paso:**
+
+```cpp
+// PE0 ejecuta: LOAD REG5, [REG0]  (REG0 = 0x0100)
+
+1. C0.loadDouble(0x0100, value)
+   │
+   ├─ findHit(set, tag) → MISS
+   │
+   ├─ emit(BusRd, 0x0100)  ← AQUÍ EMPIEZA EL BROADCAST
+   │  │
+   │  └─ bus.broadcast(&C0, BusRd, 0x0100)
+   │     │
+   │     ├─ Copiar targets = {&C0, &C1, &C2, &C3}
+   │     │
+   │     ├─ Loop:
+   │     │  ├─ C0 → SKIP (es el src)
+   │     │  │
+   │     │  ├─ C1.snoop(BusRd, 0x0100)
+   │     │  │  ├─ findLineByBase(0x0100) → WAY 1 encontrada
+   │     │  │  ├─ Estado actual: M
+   │     │  │  ├─ Acción: FLUSH
+   │     │  │  │  ├─ mem.write64(0x0100, palabra0) → 10.0
+   │     │  │  │  ├─ mem.write64(0x0108, palabra1)
+   │     │  │  │  ├─ mem.write64(0x0110, palabra2)
+   │     │  │  │  └─ mem.write64(0x0118, palabra3)
+   │     │  │  ├─ Estado nuevo: M→S
+   │     │  │  └─ stats.snoop_flush++
+   │     │  │
+   │     │  ├─ C2.snoop(BusRd, 0x0100)
+   │     │  │  └─ findLineByBase(0x0100) → -1 (no tiene)
+   │     │  │     └─ return (sin acción)
+   │     │  │
+   │     │  └─ C3.snoop(BusRd, 0x0100)
+   │     │     └─ findLineByBase(0x0100) → -1 (no tiene)
+   │     │        └─ return (sin acción)
+   │     │
+   │     └─ Broadcast completo
+   │
+   ├─ fetchLine(set, victim, 0x0100, tag)
+   │  ├─ mem.read64(0x0100) → 10.0 (¡actualizada por C1!)
+   │  ├─ mem.read64(0x0108)
+   │  ├─ mem.read64(0x0110)
+   │  └─ mem.read64(0x0118)
+   │
+   ├─ L.mesi = S
+   ├─ out = readWordInLine(L, 0) → 10.0
+   └─ return false (MISS)
+
+2. PE0: REG5 = 10.0  ✓ Valor correcto
+```
+
+---
+
+### **Estado Final:**
+
+```
+C0: 0x0100 → S (compartida, valor=10.0)
+C1: 0x0100 → S (compartida, valor=10.0)
+C2: 0x0100 → I (no tiene)
+C3: 0x0100 → I (no tiene)
+Memoria[0x0100] = 10.0 (actualizada)
+```
+
+---
+
+## **3.2 Ejemplo: STORE con Upgrade (S→M)**
+
+### **Configuración Inicial:**
+
+```
+C0: 0x0200 → S (compartida, valor=5.0)
+C1: 0x0200 → S (compartida, valor=5.0)
+C2: 0x0200 → S (compartida, valor=5.0)
+C3: 0x0200 → I (no tiene)
+```
+
+---
+
+### **Paso a Paso:**
+
+```cpp
+// PE0 ejecuta: STORE REG4, [REG2]  (REG2 = 0x0200, valor=7.0)
+
+1. C0.storeDouble(0x0200, 7.0)
+   │
+   ├─ findHit(set, tag) → HIT en WAY 1
+   │
+   ├─ Estado actual: S
+   │
+   ├─ need_upgrade = true
+   │
+   ├─ emit(BusRdX, 0x0200)
+   │  │
+   │  └─ bus.broadcast(&C0, BusRdX, 0x0200)
+   │     │
+   │     ├─ C1.snoop(BusRdX, 0x0200)
+   │     │  ├─ Estado: S
+   │     │  ├─ Acción: S→I (invalidar)
+   │     │  ├─ L.valid = false
+   │     │  └─ stats.snoop_to_I++
+   │     │
+   │     ├─ C2.snoop(BusRdX, 0x0200)
+   │     │  ├─ Estado: S
+   │     │  ├─ Acción: S→I (invalidar)
+   │     │  └─ stats.snoop_to_I++
+   │     │
+   │     └─ C3.snoop(BusRdX, 0x0200)
+   │        └─ No tiene la línea (sin acción)
+   │
+   ├─ C0: S→M
+   ├─ writeWordInLine(L, 0, 7.0)
+   ├─ L.dirty = true
+   └─ return true (HIT)
+
+2. PE0: Escritura exitosa
+```
+
+---
+
+### **Estado Final:**
+
+```
+C0: 0x0200 → M (modificada, valor=7.0)
+C1: 0x0200 → I (invalidada)
+C2: 0x0200 → I (invalidada)
+C3: 0x0200 → I (no tiene)
+Memoria[0x0200] = 5.0 (desactualizada, write-back pendiente)
+```
+
+---
+
+## **3.3 Ejemplo: Escrituras Secuenciales (Ownership Transfer)**
+
+### **Escenario:**
+
+```
+PE0 escribe 0x0300 = 1.0
+PE1 escribe 0x0300 = 2.0
+PE2 escribe 0x0300 = 3.0
+```
+
+---
+
+### **Paso 1: PE0 escribe**
+
+```
+Estado inicial: Todos en I
+
+C0.store(0x0300, 1.0)
+  → MISS + BusRdX
+  → Ninguna caché tiene la línea
+  → C0: I→M
+
+Estado: C0=M, C1=I, C2=I, C3=I
+```
+
+---
+
+### **Paso 2: PE1 escribe**
+
+```
+C1.store(0x0300, 2.0)
+  → MISS + BusRdX
+  → C0.snoop(BusRdX, 0x0300)
+     ├─ Estado: M
+     ├─ Flush: mem[0x0300] = 1.0
+     └─ M→I
+  → C1 trae línea (valor=1.0 de memoria)
+  → C1 escribe 2.0
+  → C1: I→M
+
+Estado: C0=I, C1=M, C2=I, C3=I
+Memoria = 1.0 (desactualizada respecto a C1)
+```
+
+---
+
+### **Paso 3: PE2 escribe**
+
+```
+C2.store(0x0300, 3.0)
+  → MISS + BusRdX
+  → C1.snoop(BusRdX, 0x0300)
+     ├─ Estado: M
+     ├─ Flush: mem[0x0300] = 2.0
+     └─ M→I
+  → C2 trae línea (valor=2.0 de memoria)
+  → C2 escribe 3.0
+  → C2: I→M
+
+Estado: C0=I, C1=I, C2=M, C3=I
+Memoria = 2.0 (desactualizada respecto a C2)
+```
+
+---
+
+### **Visualización del Ownership Transfer:**
+
+```
+Tiempo  │  C0  │  C1  │  C2  │  Memoria  │  Evento
+────────┼──────┼──────┼──────┼───────────┼─────────────────
+  t0    │  I   │  I   │  I   │    -      │  (inicial)
+  t1    │  M   │  I   │  I   │    -      │  C0 escribe 1.0
+  t2    │  I   │  M   │  I   │   1.0     │  C1 escribe 2.0 (C0 flush)
+  t3    │  I   │  I   │  M   │   2.0     │  C2 escribe 3.0 (C1 flush)
+────────┴──────┴──────┴──────┴───────────┴─────────────────
+
+El ownership (M) se transfiere: C0 → C1 → C2
+```
+
+---
+
+# **PARTE 4: ANÁLISIS DE DISEÑO**
+
+---
+
+## **4.1 Ventajas del Diseño**
+
+### **✓ Simplicidad**
+
+```cpp
+// API ultra simple:
+bus.attach(cache);
+bus.broadcast(src, msg, addr);
+```
+
+- Solo 2 métodos públicos
+- Interfaz clara y mínima
+- Fácil de entender y mantener
+
+---
+
+### **✓ Thread-Safety**
+
+```cpp
+std::scoped_lock lk(mx_);  // Protección automática
+```
+
+- Usa RAII para gestión de locks
+- Evita deadlocks con estrategia de "lock-copy-release"
+- Cada caché tiene su propio mutex
+
+---
+
+### **✓ Extensibilidad**
+
+```cpp
+class IBusClient {
+  virtual void snoop(...) = 0;
+};
+```
+
+- Basado en interfaces
+- Puedes agregar nuevos tipos de clientes
+- No necesitas modificar Interconnect
+
+**Ejemplos de extensión:**
+```cpp
+class L2Cache : public IBusClient { ... };
+class MemoryController : public IBusClient { ... };
+class CoherenceMonitor : public IBusClient { ... };
+
+// Todos funcionan con el mismo bus
+bus.attach(&l2cache);
+bus.attach(&memctrl);
+bus.attach(&monitor);
+```
+
+---
+
+### **✓ Desacoplamiento**
+
+- El bus no conoce detalles de las cachés
+- Las cachés no conocen detalles del bus
+- Comunicación únicamente a través de interfaces
+
+---
+
+## **4.2 Limitaciones y Posibles Mejoras**
+
+### **❌ No hay arbitración**
+
+```cpp
+// Problema: Múltiples cachés pueden broadcast simultáneamente
+C0.broadcast(...);  // Thread 0
+C1.broadcast(...);  // Thread 1 (al mismo tiempo)
+```
+
+**Mejora posible:**
+```cpp
+class Interconnect {
+  std::queue<BusTransaction> pending_;
+  void arbitrate();  // Prioriza mensajes
+};
+```
+
+---
+
+### **❌ No hay control de ancho de banda**
+
+```cpp
+// Problema: No limita cuántos mensajes se envían
+for (int i = 0; i < 1000000; i++) {
+  cache0.load(...);  // Millones de BusRd
+}
+```
+
+**Mejora posible:**
+```cpp
+class Interconnect {
+  RateLimiter limiter_;
+  bool canSend(IBusClient* c);
+};
+```
+
+---
+
+### **❌ Broadcast puro (no escalable)**
+
+```cpp
+// O(N) donde N = número de cachés
+for (auto* c : targets) {
+  c->snoop(...);  // Todos reciben todos los mensajes
+}
+```
+
+**Para 4 cachés:** Aceptable
+**Para 64 cachés:** Ineficiente
+
+**Mejora posible (topologías avanzadas):**
+```cpp
+class HierarchicalBus {
+  std::vector<Interconnect> clusters_;
+  // Solo difunde a cluster relevante
+};
+```
+
+---
+
+### **❌ Sin soporte para respuestas**
+
+```cpp
+// Problema: No hay forma de obtener respuesta inmediata
+broadcast(msg, addr);
+// ¿Alguna caché tuvo la línea en M? No lo sabemos directamente
+```
+
+**Mejora posible:**
+```cpp
+struct BusResponse {
+  bool had_modified;
+  bool had_shared;
+};
+
+BusResponse broadcast(...);
+```
+
+---
+
+## **4.3 Comparación con Buses Reales**
+
+### **Bus Simple (Tu Implementación)**
+
+```
+Características:
+• Broadcast puro
+• Sin arbitración hardware
+• Sin pipeline
+• Latencia = 1 ciclo (simulado)
+
+Ventajas:
+• Fácil de implementar
+• Fácil de depurar
+• Adecuado para simulación educativa
+
+Desventajas:
+• No escala más allá de 4-8 cores
+• No modela contención realista
+```
+
+---
+
+### **Buses Reales (Intel QPI, AMD Infinity Fabric)**
+
+```
+Características:
+• Arbitración por hardware
+• Pipeline de múltiples etapas
+• Topologías punto-a-punto
+• Ancho de banda medido (GB/s)
+• Latencias variables (NACK, retry)
+
+Ventajas:
+• Escala a decenas de cores
+• Alto throughput
+• QoS (Quality of Service)
+
+Complejidad:
+• Miles de transistores
+• Protocolos complejos (MESIF, MOESI)
+```
+
+---
+
+# **PARTE 5: FLUJO COMPLETO EN EL SISTEMA**
+
+---
+
+## **5.1 Inicialización (main)**
+
+```cpp
+// 1. Crear componentes
+Interconnect bus;
+Cache2Way cache0(adapter), cache1(adapter), 
+          cache2(adapter), cache3(adapter);
+
+// 2. Asignar IDs
+cache0.setId(0);
+cache1.setId(1);
+cache2.setId(2);
+cache3.setId(3);
+
+// 3. CONECTAR AL BUS (CRÍTICO)
+for (auto* c : {&cache0, &cache1, &cache2, &cache3}) {
+  c->setBus(&bus);    // Caché conoce al bus
+  bus.attach(c);      // Bus conoce a la caché
+}
+
+// Estado después:
+// bus.clients_ = {&cache0, &cache1, &cache2, &cache3}
+// cache0.bus_ = &bus
+// cache1.bus_ = &bus
+// cache2.bus_ = &bus
+// cache3.bus_ = &bus
+```
+
+---
+
+## **5.2 Durante Ejecución**
+
+```cpp
+// PE0 ejecuta código
+void ejecutarPE(ProcessingElement* pe, int id) {
+  while (!pe->hasFinished()) {
+    pe->executeNextInstruction();
+      │
+      ├─ LOAD/STORE
+      │  │
+      │  └─ cache_->loadDouble(...)
+      │     │
+      │     ├─ MISS detectado
+      │     │
+      │     └─ emit(BusRd, addr)
+      │        │
+      │        └─ bus_->broadcast(this, BusRd, addr)
+      │           │
+      │           └─ for (auto* c : targets) {
+      │                if (c != this) {
+      │                  c->snoop(BusRd, addr);
+      │                    │
+      │                    └─ Reacciona según MESI
+      │                }
+      │              }
+      │
+      └─ Siguiente instrucción
+  }
+}
+```
+
+---
+
+## **5.3 Diagrama de Secuencia**
+
+```
+PE0          Cache0         Bus            Cache1         Cache2
+ │             │              │              │              │
+ │──LOAD────→│              │              │              │
+ │             │              │              │              │
+ │             │──findHit──→ │              │              │
+ │             │←─MISS─────  │              │              │
+ │             │              │              │              │
+ │             │──emit(BusRd)│              │              │
+ │             │              │              │              │
+ │             │              │──broadcast──│              │
+ │             │              │              │              │
+ │             │              │──────────────┼─snoop(BusRd)│
+ │             │              │              │              │
+ │             │              │              │──M→S+flush─→│
+ │             │              │              │              │
+ │             │              │              │←─done──────  │
+ │             │              │              │              │
+ │             │              │──────────────┼──────────────┼─snoop(BusRd)
+ │             │              │              │              │
+ │             │              │              │              │←─no action─
+ │             │              │              │              │
+ │             │←─broadcast done────────────  │              │
+ │             │              │              │              │
+ │             │──fetchLine─→│              │              │
+ │             │←─data──────  │              │              │
+ │             │              │              │              │
+ │←─value────  │              │              │              │
+ │             │              │              │              │
+```
+
+---
+
+# **RESUMEN EJECUTIVO**
+
+---
+
+## **¿Qué hace el Interconnect?**
+
+1. **Registra** cachés mediante `attach()`
+2. **Difunde** mensajes MESI mediante `broadcast()`
+3. **Coordina** coherencia entre cachés
+4. **Protege** contra condiciones de carrera
+
+---
+
+## **Características Clave:**
+
+✓ **Simple:** Solo 2 métodos públicos  
+✓ **Thread-safe:** Usa mutexes correctamente  
+✓ **Eficiente:** Lock-copy-release para evitar deadlocks  
+✓ **Extensible:** Basado en interfaces  
+
+---
+
+## **Papel en MESI:**
+
+```
+Sin Interconnect:
+  C0 escribe X → C1 no se entera → INCONSISTENCIA
+
+Con Interconnect:
+  C0 escribe X → Bus difunde BusRdX → C1 invalida → COHERENCIA ✓
+```
+
+---
+
+## **Flujo Típico:**
+
+```
+1. Caché detecta MISS/conflicto MESI
+2. Llama cache_->emit(msg, addr)
+3. emit() llama bus_->broadcast(this, msg, addr)
+4. Bus difunde a todas las otras cachés
+5. Cada caché reacciona con snoop()
+6. Sistema mantiene coherencia global
+```
+
+El Interconnect es el **pegamento** que hace posible el protocolo MESI en un sistema multiprocesador, garantizando que todas las cachés tengan una vista consistente de la memoria compartida.

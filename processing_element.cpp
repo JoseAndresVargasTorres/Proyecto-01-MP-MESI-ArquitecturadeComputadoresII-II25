@@ -1,4 +1,5 @@
 #include "processing_element.hpp"
+#include "cache.hpp"  // AQUÍ SÍ incluimos cache.hpp porque necesitamos la definición completa
 #include <cstring>
 #include <stdexcept>
 
@@ -16,31 +17,38 @@ void ProcessingElement::loadProgram(const std::vector<Instruction>& prog) {
 
 void ProcessingElement::executeNextInstruction() {
     if (pc >= program.size()) {
-        return;  // Programa terminado
+        return;
     }
     
     Instruction& inst = program[pc];
     
     switch (inst.type) {
         case InstructionType::LOAD: {
-            // LOAD REG, [REG_addr]
-            // Esta instrucción necesita interactuar con caché
-            // Por ahora solo incrementa PC
+            if (!cache_) throw std::runtime_error("PE sin cache (LOAD)");
+
+            uint64_t addr = getRegister(inst.reg_src1);
+            double value = 0.0;
+
+            bool hit = cache_->loadDouble(addr, value);
+            setRegisterDouble(inst.reg_dest, value);
             read_ops++;
             pc++;
             break;
         }
-        
+
         case InstructionType::STORE: {
-            // STORE REG, [REG_addr]
-            // Esta instrucción necesita interactuar con caché
+            if (!cache_) throw std::runtime_error("PE sin cache (STORE)");
+
+            uint64_t addr = getRegister(inst.reg_src1);
+            double value = getRegisterDouble(inst.reg_dest);
+
+            bool hit = cache_->storeDouble(addr, value);
             write_ops++;
             pc++;
             break;
         }
-        
+
         case InstructionType::FMUL: {
-            // FMUL REGd, Ra, Rb
             double a = getRegisterDouble(inst.reg_src1);
             double b = getRegisterDouble(inst.reg_src2);
             setRegisterDouble(inst.reg_dest, a * b);
@@ -49,7 +57,6 @@ void ProcessingElement::executeNextInstruction() {
         }
         
         case InstructionType::FADD: {
-            // FADD REGd, Ra, Rb
             double a = getRegisterDouble(inst.reg_src1);
             double b = getRegisterDouble(inst.reg_src2);
             setRegisterDouble(inst.reg_dest, a + b);
@@ -58,21 +65,18 @@ void ProcessingElement::executeNextInstruction() {
         }
         
         case InstructionType::INC: {
-            // INC REG
-            registers[inst.reg_dest]++;
+            registers[inst.reg_dest]+= 8;
             pc++;
             break;
         }
         
         case InstructionType::DEC: {
-            // DEC REG
             registers[inst.reg_dest]--;
             pc++;
             break;
         }
         
         case InstructionType::JNZ: {
-            // JNZ label (salta si REG3 != 0, por convención)
             if (registers[inst.reg_dest] != 0) {
                 pc = inst.label;
             } else {
@@ -93,6 +97,10 @@ void ProcessingElement::reset() {
         registers[i] = 0;
     }
     resetStats();
+}
+
+void ProcessingElement::hardReset() {
+    reset();
 }
 
 void ProcessingElement::setRegister(int reg_num, uint64_t value) {
@@ -125,4 +133,16 @@ double ProcessingElement::getRegisterDouble(int reg_num) const {
 void ProcessingElement::resetStats() {
     read_ops = 0;
     write_ops = 0;
+}
+
+// Implementación del método para obtener estado MESI
+std::optional<int> ProcessingElement::getMESIStateAsInt(uint64_t addr) const {
+    if (cache_) {
+        auto mesi = cache_->getLineMESI(addr);
+        if (mesi) {
+            // Convertir enum MESI a int: I=0, S=1, E=2, M=3
+            return static_cast<int>(*mesi);
+        }
+    }
+    return std::nullopt;
 }
