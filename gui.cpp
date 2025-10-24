@@ -1,5 +1,5 @@
 // gui.cpp
-// ImplementaciÃƒÂ³n de la interfaz grÃƒÂ¡fica para el simulador MESI
+// Implementación de la interfaz gráfica para el simulador MESI
 // CE-4302 Arquitectura de Computadores II
 
 #include "gui.hpp"
@@ -20,7 +20,7 @@
 MESISimulatorGUI* g_gui_instance = nullptr;
 
 // ============================================================================
-// CacheLineWidget - Widget para mostrar una lÃƒÂ­nea de cachÃƒÂ©
+// CacheLineWidget - Widget para mostrar una línea de caché
 // ============================================================================
 
 CacheLineWidget::CacheLineWidget(int x, int y, int w, int h, const char* label)
@@ -168,7 +168,7 @@ void BusLogWidget::clear() {
 }
 
 // ============================================================================
-// CacheStatsWidget - Widget para estadÃƒÂ­sticas de cachÃƒÂ©
+// CacheStatsWidget - Widget para estadísticas de caché
 // ============================================================================
 
 CacheStatsWidget::CacheStatsWidget(int x, int y, int w, int h, const char* label)
@@ -297,7 +297,7 @@ MESISimulatorGUI::~MESISimulatorGUI() {
 }
 
 // ============================================================================
-// CreaciÃƒÂ³n de paneles de la interfaz grÃƒÂ¡fica
+// Creación de paneles de la interfaz gráfica
 // ============================================================================
 
 void MESISimulatorGUI::createControlPanel() {
@@ -312,40 +312,33 @@ void MESISimulatorGUI::createControlPanel() {
     int btn_height = 40;
     int spacing = 10;
     
-    // BotÃƒÂ³n Load System
     btn_load_ = new Fl_Button(x, y, btn_width, btn_height, "Load System");
     btn_load_->callback(cb_load_system, this);
     x += btn_width + spacing;
     
-    // BotÃƒÂ³n Step
     btn_step_ = new Fl_Button(x, y, btn_width, btn_height, "Step");
     btn_step_->callback(cb_step, this);
     btn_step_->deactivate();
     x += btn_width + spacing;
     
-    // BotÃƒÂ³n Continue
     btn_continue_ = new Fl_Button(x, y, btn_width, btn_height, "Continue");
     btn_continue_->callback(cb_continue, this);
     btn_continue_->deactivate();
     x += btn_width + spacing;
     
-    // BotÃƒÂ³n Run All
     btn_run_all_ = new Fl_Button(x, y, btn_width, btn_height, "Run All");
     btn_run_all_->callback(cb_run_all, this);
     btn_run_all_->deactivate();
     x += btn_width + spacing;
     
-    // BotÃƒÂ³n Reset
     btn_reset_ = new Fl_Button(x, y, btn_width, btn_height, "Reset");
     btn_reset_->callback(cb_reset, this);
     x += btn_width + spacing;
     
-    // BotÃƒÂ³n Exit
     btn_exit_ = new Fl_Button(x, y, btn_width, btn_height, "Exit");
     btn_exit_->callback(cb_exit, this);
     x += btn_width + spacing * 3;
     
-    // Status box
     status_box_ = new Fl_Box(x, y, 400, btn_height, "Ready. Load system to begin.");
     status_box_->box(FL_DOWN_BOX);
     status_box_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
@@ -397,12 +390,10 @@ void MESISimulatorGUI::createCachePanel() {
     int spacing_x = 10;
     int spacing_y = 5;
     
-    // Crear widgets para cada cachÃƒÂ© (4 cachÃƒÂ©s, 8 sets, 2 ways = 16 lÃƒÂ­neas por cachÃƒÂ©)
     for (int cache_id = 0; cache_id < 4; cache_id++) {
         int x = x_start + cache_id * (cache_width + spacing_x);
         int y = y_start;
         
-        // TÃƒÂ­tulo de la cachÃƒÂ©
         char cache_label[32];
         snprintf(cache_label, sizeof(cache_label), "Cache %d", cache_id);
         Fl_Box* title = new Fl_Box(x, y, cache_width, 20, cache_label);
@@ -410,7 +401,6 @@ void MESISimulatorGUI::createCachePanel() {
         title->labelfont(FL_HELVETICA_BOLD);
         y += 25;
         
-        // Crear widgets para cada lÃƒÂ­nea (8 sets Ãƒâ€” 2 ways = 16 lÃƒÂ­neas)
         for (int set = 0; set < 8; set++) {
             for (int way = 0; way < 2; way++) {
                 CacheLineWidget* widget = new CacheLineWidget(x, y, cache_width, line_height);
@@ -434,12 +424,10 @@ void MESISimulatorGUI::createBusPanel() {
     bus_panel_->align(FL_ALIGN_TOP_LEFT | FL_ALIGN_INSIDE);
     bus_panel_->begin();
     
-    // TÃƒÂ­tulo
     bus_title_ = new Fl_Box(panel_x + 5, panel_y + 5, panel_width - 10, 20, "Interconnect Messages");
     bus_title_->labelfont(FL_HELVETICA_BOLD);
     bus_title_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     
-    // Log del bus
     bus_log_ = new BusLogWidget(panel_x + 5, panel_y + 30, 
                                  panel_width - 10, panel_height - 35);
     
@@ -476,7 +464,7 @@ void MESISimulatorGUI::createStatsPanel() {
 }
 
 // ============================================================================
-// MÃƒÂ©todos show() y run()
+// Métodos show() y run()
 // ============================================================================
 
 void MESISimulatorGUI::show() {
@@ -488,7 +476,7 @@ int MESISimulatorGUI::run() {
 }
 
 // ============================================================================
-// MÃƒÂ©todo para actualizar la interfaz grÃƒÂ¡fica en cada paso
+// Método para actualizar la interfaz gráfica en cada paso
 // ============================================================================
 
 void MESISimulatorGUI::cb_update_display(void* data) {
@@ -499,7 +487,7 @@ void MESISimulatorGUI::cb_update_display(void* data) {
 
 
 // ============================================================================
-// MÃƒÂ©todos de actualizaciÃƒÂ³n de la interfaz
+// Métodos de actualización de la interfaz
 // ============================================================================
 
 void MESISimulatorGUI::updateDisplay() {
@@ -507,10 +495,9 @@ void MESISimulatorGUI::updateDisplay() {
         return;
     }
     
-    // Usar try_lock para evitar bloquear la GUI
     std::unique_lock<std::mutex> lock(display_mutex_, std::try_to_lock);
     if (!lock.owns_lock()) {
-        return; // Si no podemos obtener el lock, simplemente saltamos esta actualizaciÃ³n
+        return;
     }
     
     updatePEDisplays();
@@ -539,13 +526,11 @@ void MESISimulatorGUI::updateCacheDisplays() {
         
         int widget_index = 0;
         
-        // Recorrer los 8 sets y 2 ways
         for (uint32_t set = 0; set < 8; set++) {
             for (uint32_t way = 0; way < 2; way++) {
                 try {
                     auto line_info = caches_[cache_id]->getLineInfo(set, way);
                     
-                    // Convertir enum MESI a int: I=0, S=1, E=2, M=3
                     int mesi_int = static_cast<int>(line_info.mesi);
                     
                     cache_line_widgets_[cache_id][widget_index]->setLineData(
@@ -560,7 +545,6 @@ void MESISimulatorGUI::updateCacheDisplays() {
                     
                     widget_index++;
                 } catch (const std::exception& e) {
-                    // Si hay error, continuar con la siguiente lÃƒÂ­nea
                     widget_index++;
                 }
             }
@@ -571,12 +555,10 @@ void MESISimulatorGUI::updateCacheDisplays() {
 void MESISimulatorGUI::updateBusLog() {
     std::lock_guard<std::mutex> lock(bus_log_mutex_);
     
-    // Agregar todos los mensajes pendientes al log
     for (const auto& msg : bus_messages_) {
         bus_log_->addMessage(msg);
     }
     
-    // Limpiar los mensajes procesados
     bus_messages_.clear();
 }
 
@@ -602,20 +584,18 @@ void MESISimulatorGUI::updateStatsDisplay() {
 }
 
 // ============================================================================
-// MÃƒÂ©todo auxiliar para logging de mensajes del bus
+// Método auxiliar para logging de mensajes del bus
 // ============================================================================
 
 void MESISimulatorGUI::logBusMessage(const std::string& msg) {
-    // Usar un scope muy pequeÃ±o para el lock
     {
         std::lock_guard<std::mutex> lock(bus_log_mutex_);
         bus_messages_.push_back(msg);
     }
-    // NO llamar a Fl::check() aquÃ­ ya que puede causar deadlock
 }
 
 // ============================================================================
-// MÃƒÂ©todos auxiliares de simulaciÃƒÂ³n
+// Métodos auxiliares de simulación
 // ============================================================================
 
 void MESISimulatorGUI::stepAllPEs() {
@@ -623,34 +603,28 @@ void MESISimulatorGUI::stepAllPEs() {
         return;
     }
     
-    // Si ya todos terminaron, no hacer nada
     if (all_pes_finished_) {
         return;
     }
     
-    // Modo round-robin: ejecutar 1 instrucción del siguiente PE activo
     int intentos = 0;
-    const int max_intentos = 4; // Máximo número de PEs
+    const int max_intentos = 4;
     bool executed_something = false;
     
     while (intentos < max_intentos && !executed_something) {
         int pe_id = current_pe_for_step_;
         
-        // Avanzar al siguiente PE para el próximo step
         current_pe_for_step_ = (current_pe_for_step_ + 1) % 4;
         intentos++;
         
-        // Verificar si este PE está vivo y no ha terminado
         if (!pe_alive_[pe_id]) {
-            continue; // Este PE ya terminó, probar con el siguiente
+            continue;
         }
         
         if (pes_[pe_id] && !pes_[pe_id]->hasFinished()) {
             try {
-                // Ejecutar UNA instrucción de este PE
                 pes_[pe_id]->executeNextInstruction();
                 
-                // Log inmediato de la ejecución
                 std::ostringstream oss;
                 oss << "[Step " << (global_step_count_ + 1) << "] PE" << pe_id 
                     << " ejecutó instrucción (PC=" << pes_[pe_id]->getPC() << ")";
@@ -659,7 +633,6 @@ void MESISimulatorGUI::stepAllPEs() {
                 global_step_count_++;
                 executed_something = true;
                 
-                // Verificar si este PE acaba de terminar
                 if (pes_[pe_id]->hasFinished()) {
                     std::ostringstream finish_oss;
                     finish_oss << "[PE" << pe_id << "] ha terminado su ejecución";
@@ -672,11 +645,9 @@ void MESISimulatorGUI::stepAllPEs() {
                 oss << "[PE" << pe_id << "] ERROR: " << e.what();
                 logBusMessage(oss.str());
                 
-                // Marcar este PE como muerto
                 pe_alive_[pe_id] = false;
             }
         } else {
-            // Este PE terminó
             if (pe_alive_[pe_id]) {
                 std::ostringstream oss;
                 oss << "[PE" << pe_id << "] ha terminado su ejecución";
@@ -686,7 +657,6 @@ void MESISimulatorGUI::stepAllPEs() {
         }
     }
     
-    // Verificar si todos los PEs han terminado
     if (!executed_something) {
         bool all_finished = true;
         for (int i = 0; i < 4; i++) {
@@ -700,7 +670,16 @@ void MESISimulatorGUI::stepAllPEs() {
     all_pes_finished_ = true;
     logBusMessage("=== Todos los PEs han terminado su ejecución ===");
     
-    // Leer y mostrar resultados finales
+    // FLUSH TODAS LAS CACHÉS ANTES DE LEER RESULTADOS
+    logBusMessage("=== Flushing all caches ===");
+    for (int i = 0; i < 4; i++) {
+        if (caches_[i]) {
+            caches_[i]->flushAll();
+        }
+    }
+    logBusMessage("All caches flushed.");
+    
+    // Ahora sí leer y mostrar resultados finales
     try {
         double partial_sums[4];
         double total = 0.0;
@@ -725,11 +704,9 @@ void MESISimulatorGUI::stepAllPEs() {
         logBusMessage(oss.str());
     }
     
-    // Desactivar botones de ejecución
     btn_step_->deactivate();
     btn_continue_->deactivate();
             
-            // Actualizar status
             status_box_->copy_label("All PEs have finished execution");
         }
     }
@@ -744,7 +721,6 @@ void MESISimulatorGUI::executeThreadedPE(int pe_id) {
     oss << "[PE" << pe_id << "] Thread started";
     logBusMessage(oss.str());
     
-    // Ejecutar hasta terminar el programa
     while (!pes_[pe_id]->hasFinished() && running_) {
         try {
             pes_[pe_id]->executeNextInstruction();
@@ -764,7 +740,6 @@ void MESISimulatorGUI::executeThreadedPE(int pe_id) {
 void MESISimulatorGUI::resetSystem() {
     running_ = false;
     
-    // Esperar a que todos los threads terminen
     for (auto& t : pe_threads_) {
         if (t.joinable()) {
             t.join();
@@ -772,7 +747,6 @@ void MESISimulatorGUI::resetSystem() {
     }
     pe_threads_.clear();
     
-    // Resetear componentes si existen
     for (int i = 0; i < 4; i++) {
         if (pes_[i]) {
             pes_[i]->reset();
@@ -790,12 +764,10 @@ void MESISimulatorGUI::resetSystem() {
     system_loaded_ = false;
     global_step_count_ = 0;
     
-    // Resetear variables de stepping
     current_pe_for_step_ = 0;
     pe_alive_ = std::vector<bool>(4, true);
     all_pes_finished_ = false;
     
-    // Limpiar GUI
     {
         std::lock_guard<std::mutex> lock(bus_log_mutex_);
         bus_messages_.clear();
@@ -805,7 +777,6 @@ void MESISimulatorGUI::resetSystem() {
         bus_log_->clear();
     }
     
-    // Desactivar botones
     btn_step_->deactivate();
     btn_continue_->deactivate();
     btn_run_all_->deactivate();
@@ -818,7 +789,6 @@ void MESISimulatorGUI::resetSystem() {
 void MESISimulatorGUI::exitProgram() {
     running_ = false;
     
-    // Esperar a que todos los threads terminen
     for (auto& t : pe_threads_) {
         if (t.joinable()) {
             t.join();
@@ -830,7 +800,6 @@ void MESISimulatorGUI::exitProgram() {
     status_box_->copy_label("Exiting... Goodbye!");
     Fl::check();
     
-    // Cerrar ventana
     if (window_) {
         window_->hide();
     }
@@ -839,7 +808,6 @@ void MESISimulatorGUI::exitProgram() {
 }
 
 void MESISimulatorGUI::loadSystem() {
-    // Si ya estÃƒÂ¡ cargado, resetear primero
     if (system_loaded_) {
         resetSystem();
     }
@@ -849,32 +817,26 @@ void MESISimulatorGUI::loadSystem() {
     Fl::check();
     
     try {
-        // 1. Crear memoria principal
         memoria_ = std::make_unique<MainMemory>();
         logBusMessage("Main memory created (512 x 64-bit words)");
-        Fl::check();  // Permitir que la GUI se actualice
+        Fl::check();
         
-        // 2. Crear adaptador de memoria
         adapter_ = std::make_unique<MainMemoryAdapter>(*memoria_);
         logBusMessage("Memory adapter created");
         
-        // 3. Crear interconnect (bus)
         bus_ = std::make_unique<Interconnect>();
         logBusMessage("Interconnect (bus) created");
         Fl::check();
         
-        // 4. Crear cachÃƒÂ©s y conectarlas al bus
         for (int i = 0; i < 4; i++) {
             caches_[i] = std::make_unique<Cache2Way>(*adapter_);
             caches_[i]->setId(i);
             caches_[i]->setBus(bus_.get());
             
-            // Configurar callback para logging
             caches_[i]->setLogCallback([this](const std::string& msg) {
                 this->logBusMessage(msg);
             });
             
-            // Registrar en el bus
             bus_->attach(caches_[i].get());
             
             std::ostringstream oss;
@@ -883,7 +845,6 @@ void MESISimulatorGUI::loadSystem() {
         }
         Fl::check();
         
-        // 5. Crear Processing Elements
         for (int i = 0; i < 4; i++) {
             pes_[i] = std::make_unique<ProcessingElement>(i);
             pes_[i]->setCache(caches_[i].get());
@@ -894,24 +855,21 @@ void MESISimulatorGUI::loadSystem() {
         }
         Fl::check();
         
-        // 6. Inicializar memoria con datos de ejemplo
-        // Vector A: elementos del 0 al 15 con valor 1.0, 2.0, 3.0, ..., 16.0
-        // Vector B: elementos del 0 al 15 con valor 2.0, 2.0, 2.0, ..., 2.0
-        // Resultado esperado: 1*2 + 2*2 + 3*2 + ... + 16*2 = 2*(1+2+3+...+16) = 2*136 = 272.0
-        
         uint64_t base_addr_A = 0x0000;
-        uint64_t base_addr_B = 0x0080;  // 128 bytes despuÃƒÂ©s (16 doubles * 8 bytes)
-        uint64_t base_addr_partial = 0x0100;  // 256 bytes despuÃƒÂ©s
+        uint64_t base_addr_B = 0x0080;
+        uint64_t base_addr_partial = 0x0100;
         
         for (int i = 0; i < vector_size_; i++) {
             memoria_->writeDouble(base_addr_A + i * 8, static_cast<double>(i + 1));
             memoria_->writeDouble(base_addr_B + i * 8, 2.0);
         }
         
-        // Inicializar partial_sums en 0.0
         for (int i = 0; i < 4; i++) {
             memoria_->writeDouble(base_addr_partial + i * 64, 0.0);
         }
+        
+        uint64_t shared_counter = 0x0200;
+        memoria_->writeDouble(shared_counter, 0.0);
         
         logBusMessage("Memory initialized with test vectors");
         logBusMessage("Vector A: [1.0, 2.0, 3.0, ..., 16.0]");
@@ -919,89 +877,54 @@ void MESISimulatorGUI::loadSystem() {
         logBusMessage("Expected dot product: 272.0");
         Fl::check();
         
-        // Cada PE procesa N/4 elementos (16/4 = 4 elementos)
-int elements_per_pe = vector_size_ / 4;
+        int elements_per_pe = vector_size_ / 4;
 
-for (int pe_id = 0; pe_id < 4; pe_id++) {
-    std::vector<Instruction> program;
-    
-    // Calcular direcciones base para este PE
-    uint64_t my_start_A = base_addr_A + pe_id * elements_per_pe * 8;
-    uint64_t my_start_B = base_addr_B + pe_id * elements_per_pe * 8;
-    uint64_t my_partial = base_addr_partial + pe_id * 64;  // Cambiar de pe_id*8 a pe_id*64
-    
-    // ============================================================
-    // InicializaciÃƒÂ³n de registros (antes del programa)
-    // ============================================================
-    // REG0: puntero a A (inicio del segmento)
-    // REG1: puntero a B (inicio del segmento)
-    // REG2: puntero a partial_sum[pe_id]
-    // REG3: contador (N/4 = 4)
-    // REG4: acumulador (partial_sum) - se inicializa en 0.0
-    
-    pes_[pe_id]->setRegister(0, my_start_A);
-    pes_[pe_id]->setRegister(1, my_start_B);
-    pes_[pe_id]->setRegister(2, my_partial);
-    pes_[pe_id]->setRegister(3, elements_per_pe);
-    pes_[pe_id]->setRegisterDouble(4, 0.0);  // Acumulador = 0.0
-    
-    // Log de inicializaciÃƒÂ³n
-    std::ostringstream init_oss;
-    init_oss << "PE" << pe_id << " registers initialized: "
-             << "REG0=0x" << std::hex << my_start_A 
-             << " REG1=0x" << my_start_B
-             << " REG2=0x" << my_partial
-             << " REG3=" << std::dec << elements_per_pe;
-    logBusMessage(init_oss.str());
-    
-    // ============================================================
-    // PROGRAMA - TraducciÃƒÂ³n exacta del assembly de la imagen
-    // ============================================================
-    
-    // LÃƒÂ­nea 7: LOAD REG4, [REG2]  ; Accumulates doubles (partial_sums[ID])
-    program.push_back({InstructionType::LOAD, 4, 2, 0, 0});
-    
-    // LÃƒÂ­nea 8: LOOP:
-    int loop_start = program.size();  // El loop empieza aquÃƒÂ­ (instrucciÃƒÂ³n 1)
-    
-    // LÃƒÂ­nea 9: LOAD REG5, [REG0]  ; Load A[i] (double)
-    program.push_back({InstructionType::LOAD, 5, 0, 0, 0});
-    
-    // LÃƒÂ­nea 10: LOAD REG6, [REG1]  ; Load B[i] (double)
-    program.push_back({InstructionType::LOAD, 6, 1, 0, 0});
-    
-    // LÃƒÂ­nea 11: FMUL REG7, REG5, REG6  ; REG7 = A[i]*B[i] (double)
-    program.push_back({InstructionType::FMUL, 7, 5, 6, 0});
-    
-    // LÃƒÂ­nea 12: FADD REG4, REG4, REG7  ; REG4 += REG7 (double)
-    program.push_back({InstructionType::FADD, 4, 4, 7, 0});
-    
-    // LÃƒÂ­nea 13: INC REG0  ; Next elemnt of A
-    program.push_back({InstructionType::INC, 0, 0, 0, 0});
-    
-    // LÃƒÂ­nea 14: INC REG1  ; Next elemnt of B
-    program.push_back({InstructionType::INC, 1, 0, 0, 0});
-    
-    // LÃƒÂ­nea 15: DEC REG3
-    program.push_back({InstructionType::DEC, 3, 0, 0, 0});
-    
-    // LÃƒÂ­nea 16: JNZ LOOP
-    program.push_back({InstructionType::JNZ, 3, 0, 0, loop_start});
-    
-    // LÃƒÂ­nea 17: STORE REG4, [REG2]  ; Store the partial_sums (double)
-    program.push_back({InstructionType::STORE, 4, 2, 0, 0});
-    
-    // ============================================================
-    // Cargar el programa en el PE
-    // ============================================================
-    pes_[pe_id]->loadProgram(program);
-    
-    std::ostringstream oss;
-    oss << "PE " << pe_id << " program loaded (" << program.size() << " instructions)";
-    logBusMessage(oss.str());
-}
+        for (int pe_id = 0; pe_id < 4; pe_id++) {
+            std::vector<Instruction> program;
+            
+            uint64_t my_start_A = base_addr_A + pe_id * elements_per_pe * 8;
+            uint64_t my_start_B = base_addr_B + pe_id * elements_per_pe * 8;
+            uint64_t my_partial = base_addr_partial + pe_id * 64;
+            
+            pes_[pe_id]->setRegister(0, my_start_A);
+            pes_[pe_id]->setRegister(1, my_start_B);
+            pes_[pe_id]->setRegister(2, my_partial);
+            pes_[pe_id]->setRegister(3, elements_per_pe);
+            pes_[pe_id]->setRegisterDouble(4, 0.0);
+            
+            std::ostringstream init_oss;
+            init_oss << "PE" << pe_id << " registers initialized: "
+                     << "REG0=0x" << std::hex << my_start_A 
+                     << " REG1=0x" << my_start_B
+                     << " REG2=0x" << my_partial
+                     << " REG3=" << std::dec << elements_per_pe;
+            logBusMessage(init_oss.str());
+            
+            pes_[pe_id]->setRegister(7, shared_counter);
+            program.push_back({InstructionType::LOAD, 7, 7, 0, 0});
+            
+            program.push_back({InstructionType::LOAD, 4, 2, 0, 0});
+            
+            int loop_start = program.size();
+            
+            program.push_back({InstructionType::LOAD, 5, 0, 0, 0});
+            program.push_back({InstructionType::LOAD, 6, 1, 0, 0});
+            program.push_back({InstructionType::FMUL, 7, 5, 6, 0});
+            program.push_back({InstructionType::FADD, 4, 4, 7, 0});
+            program.push_back({InstructionType::INC, 0, 0, 0, 0});
+            program.push_back({InstructionType::INC, 1, 0, 0, 0});
+            program.push_back({InstructionType::DEC, 3, 0, 0, 0});
+            program.push_back({InstructionType::JNZ, 3, 0, 0, loop_start});
+            
+            program.push_back({InstructionType::STORE, 4, 2, 0, 0});
+            
+            pes_[pe_id]->loadProgram(program);
+            
+            std::ostringstream oss;
+            oss << "PE " << pe_id << " program loaded (" << program.size() << " instructions)";
+            logBusMessage(oss.str());
+        }
         
-        // Sistema cargado exitosamente
         system_loaded_ = true;
         current_pe_for_step_ = 0;
         pe_alive_ = std::vector<bool>(4, true);
@@ -1013,9 +936,7 @@ for (int pe_id = 0; pe_id < 4; pe_id++) {
         status_box_->copy_label("System loaded successfully. Ready to execute.");
         logBusMessage("=== System ready ===");
         
-        // Forzar una actualizaciÃ³n de la GUI
         Fl::check();
-        // NO llamar a updateDisplay() aquÃ­ - se actualizarÃ¡ automÃ¡ticamente por el timer
         
     } catch (const std::exception& e) {
         std::ostringstream oss;
@@ -1062,7 +983,7 @@ void MESISimulatorGUI::cb_exit(Fl_Widget* w, void* data) {
 }
 
 // ============================================================================
-// MÃƒÂ©todos de ejecuciÃƒÂ³n llamados por los callbacks
+// Métodos de ejecución llamados por los callbacks
 // ============================================================================
 
 void MESISimulatorGUI::stepExecution() {
@@ -1071,10 +992,8 @@ void MESISimulatorGUI::stepExecution() {
         return;
     }
     
-    // Verificar si todos los PEs han terminado
     if (all_pes_finished_) {
-        status_box_->copy_label("All PEs have finished execution - No more steps available");
-        logBusMessage("=== No hay más instrucciones para ejecutar ===");
+        status_box_->copy_label("All PEs have finished execution");
         return;
     }
     
@@ -1082,12 +1001,10 @@ void MESISimulatorGUI::stepExecution() {
     stepAllPEs();
     stepping_ = false;
     
-    // Si no terminaron todos, mostrar información del paso actual
     if (!all_pes_finished_) {
         std::ostringstream oss;
         oss << "Step " << global_step_count_ << " completed";
         
-        // Agregar info de cuántos PEs siguen activos
         int activos = 0;
         for (int i = 0; i < 4; i++) {
             if (pes_[i] && !pes_[i]->hasFinished()) {
@@ -1108,6 +1025,11 @@ void MESISimulatorGUI::continueExecution() {
         return;
     }
     
+    if (all_pes_finished_) {
+        status_box_->copy_label("All PEs have finished execution");
+        return;
+    }
+    
     running_ = true;
     btn_step_->deactivate();
     btn_continue_->deactivate();
@@ -1116,12 +1038,9 @@ void MESISimulatorGUI::continueExecution() {
     status_box_->copy_label("Executing (continue mode)...");
     Fl::check();
     
-    // Ejecutar en un loop hasta que todos terminen o se alcance breakpoint
     while (running_) {
-        // Ejecutar un step (1 instrucción de 1 PE)
         stepAllPEs();
         
-        // Verificar si todos los PEs han terminado
         bool all_finished = true;
         for (int i = 0; i < 4; i++) {
             if (pes_[i] && !pes_[i]->hasFinished()) {
@@ -1137,7 +1056,6 @@ void MESISimulatorGUI::continueExecution() {
             break;
         }
         
-        // Verificar breakpoint
         if (breakpoint_interval_ > 0 && global_step_count_ % breakpoint_interval_ == 0) {
             running_ = false;
             std::ostringstream oss;
@@ -1150,7 +1068,6 @@ void MESISimulatorGUI::continueExecution() {
             break;
         }
         
-        // Actualizar display cada 10 pasos
         if (global_step_count_ % 10 == 0) {
             std::ostringstream oss;
             oss << "Executing... step " << global_step_count_;
@@ -1173,6 +1090,11 @@ void MESISimulatorGUI::runAll() {
         return;
     }
     
+    if (all_pes_finished_) {
+        status_box_->copy_label("All PEs have finished execution");
+        return;
+    }
+    
     running_ = true;
     btn_step_->deactivate();
     btn_continue_->deactivate();
@@ -1183,15 +1105,12 @@ void MESISimulatorGUI::runAll() {
     logBusMessage("=== Starting parallel execution ===");
     Fl::check();
     
-    // Limpiar threads anteriores si existen
     pe_threads_.clear();
     
-    // Crear un thread por cada PE
     for (int i = 0; i < 4; i++) {
         pe_threads_.emplace_back(&MESISimulatorGUI::executeThreadedPE, this, i);
     }
     
-    // Esperar a que todos los threads terminen
     for (auto& t : pe_threads_) {
         if (t.joinable()) {
             t.join();
@@ -1201,7 +1120,6 @@ void MESISimulatorGUI::runAll() {
     
     running_ = false;
     
-    // Flush de todas las cachÃƒÂ©s
     logBusMessage("=== Flushing all caches ===");
     for (int i = 0; i < 4; i++) {
         if (caches_[i]) {
@@ -1212,14 +1130,13 @@ void MESISimulatorGUI::runAll() {
     logBusMessage("=== Execution completed ===");
     logBusMessage("All caches flushed.");
     
-    // Leer y mostrar resultados
     try {
         double partial_sums[4];
         double total = 0.0;
         uint64_t base_addr_partial = 0x0100;
         
         for (int i = 0; i < 4; i++) {
-            partial_sums[i] = memoria_->readDouble(base_addr_partial + i * 64);  
+            partial_sums[i] = memoria_->readDouble(base_addr_partial + i * 64);
             total += partial_sums[i];
             
             std::ostringstream oss;
