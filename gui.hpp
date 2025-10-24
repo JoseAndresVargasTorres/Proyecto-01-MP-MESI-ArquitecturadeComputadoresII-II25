@@ -147,6 +147,7 @@ public:
     void updateCacheDisplays();
     void updateBusLog();
     void updateStatsDisplay();
+    void updateMemoryStats();
 
     // Callbacks de los botones
     static void cb_load_system(Fl_Widget* w, void* data);
@@ -181,6 +182,7 @@ private:
     Fl_Box* bus_title_;
     RegisterWidget* pe_widgets_[4];
     std::vector<CacheLineWidget*> cache_line_widgets_[4];
+    Fl_Box* memory_stats_box_;
 
     // Variables de simulación
     std::unique_ptr<ProcessingElement> pes_[4];
@@ -212,9 +214,9 @@ private:
     bool system_loaded_;
     
     // Variables para stepping round-robin
-    int current_pe_for_step_;  // Índice del PE que ejecutará la siguiente instrucción
-    std::vector<bool> pe_alive_; // Estado de si cada PE está activo
-    bool all_pes_finished_;  // <--- AGREGA ESTA LÍNEA
+    int current_pe_for_step_;
+    std::vector<bool> pe_alive_;
+    bool all_pes_finished_;
 
     // Mutexes
     std::mutex display_mutex_;

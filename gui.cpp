@@ -10,6 +10,7 @@
 #include "interconnect.hpp"
 
 #include <FL/fl_draw.H>
+#include <FL/fl_ask.H>
 #include <sstream>
 #include <iomanip>
 #include <cmath>
@@ -262,7 +263,8 @@ MESISimulatorGUI::MESISimulatorGUI(int width, int height)
       global_step_count_(0),
       current_pe_for_step_(0),
       pe_alive_(4, true),
-      all_pes_finished_(false) {
+      all_pes_finished_(false),
+      memory_stats_box_(nullptr) {
     
     g_gui_instance = this;
     
@@ -395,7 +397,7 @@ void MESISimulatorGUI::createCachePanel() {
         int y = y_start;
         
         char cache_label[32];
-        snprintf(cache_label, sizeof(cache_label), "Cache %d", cache_id);
+        snprintf(cache_label, sizeof(cache_label), "Cache C%d", cache_id);
         Fl_Box* title = new Fl_Box(x, y, cache_width, 20, cache_label);
         title->box(FL_FLAT_BOX);
         title->labelfont(FL_HELVETICA_BOLD);
@@ -454,11 +456,17 @@ void MESISimulatorGUI::createStatsPanel() {
     
     for (int i = 0; i < 4; i++) {
         char label[32];
-        snprintf(label, sizeof(label), "Cache %d Stats", i);
+        snprintf(label, sizeof(label), "Cache C%d Stats", i);
         
         cache_stats_[i] = new CacheStatsWidget(x, y, stats_width, stats_height, label);
         y += stats_height + spacing;
     }
+    
+    // Agregar widget de estadísticas de memoria principal
+    memory_stats_box_ = new Fl_Box(x, y, stats_width, 100, "Main Memory Stats");
+    memory_stats_box_->box(FL_BORDER_BOX);
+    memory_stats_box_->align(FL_ALIGN_TOP_LEFT | FL_ALIGN_INSIDE);
+    memory_stats_box_->labelfont(FL_HELVETICA_BOLD);
     
     stats_scroll_->end();
 }
@@ -504,6 +512,7 @@ void MESISimulatorGUI::updateDisplay() {
     updateCacheDisplays();
     updateBusLog();
     updateStatsDisplay();
+    updateMemoryStats();
     
     Fl::check();
 }
@@ -580,6 +589,18 @@ void MESISimulatorGUI::updateStatsDisplay() {
                 stats.snoop_flush
             );
         }
+    }
+}
+
+void MESISimulatorGUI::updateMemoryStats() {
+    if (memoria_ && memory_stats_box_) {
+        std::ostringstream oss;
+        oss << "Main Memory Stats\n\n";
+        oss << "Reads:  " << memoria_->getReadCount() << "\n";
+        oss << "Writes: " << memoria_->getWriteCount();
+        
+        memory_stats_box_->copy_label(oss.str().c_str());
+        memory_stats_box_->redraw();
     }
 }
 
@@ -667,45 +688,45 @@ void MESISimulatorGUI::stepAllPEs() {
         }
         
         if (all_finished) {
-    all_pes_finished_ = true;
-    logBusMessage("=== Todos los PEs han terminado su ejecución ===");
-    
-    // FLUSH TODAS LAS CACHÉS ANTES DE LEER RESULTADOS
-    logBusMessage("=== Flushing all caches ===");
-    for (int i = 0; i < 4; i++) {
-        if (caches_[i]) {
-            caches_[i]->flushAll();
-        }
-    }
-    logBusMessage("All caches flushed.");
-    
-    // Ahora sí leer y mostrar resultados finales
-    try {
-        double partial_sums[4];
-        double total = 0.0;
-        uint64_t base_addr_partial = 0x0100;
-        
-        for (int i = 0; i < 4; i++) {
-            partial_sums[i] = memoria_->readDouble(base_addr_partial + i * 64);
-            total += partial_sums[i];
+            all_pes_finished_ = true;
+            logBusMessage("=== Todos los PEs han terminado su ejecución ===");
             
-            std::ostringstream oss;
-            oss << "PE" << i << " partial_sum = " << partial_sums[i];
-            logBusMessage(oss.str());
-        }
-        
-        std::ostringstream result_oss;
-        result_oss << "FINAL RESULT: Dot Product = " << total;
-        logBusMessage(result_oss.str());
-        
-    } catch (const std::exception& e) {
-        std::ostringstream oss;
-        oss << "ERROR reading results: " << e.what();
-        logBusMessage(oss.str());
-    }
-    
-    btn_step_->deactivate();
-    btn_continue_->deactivate();
+            // FLUSH TODAS LAS CACHÉS ANTES DE LEER RESULTADOS
+            logBusMessage("=== Flushing all caches ===");
+            for (int i = 0; i < 4; i++) {
+                if (caches_[i]) {
+                    caches_[i]->flushAll();
+                }
+            }
+            logBusMessage("All caches flushed.");
+            
+            // Ahora sí leer y mostrar resultados finales
+            try {
+                double partial_sums[4];
+                double total = 0.0;
+                uint64_t base_addr_partial = 0x0100;
+                
+                for (int i = 0; i < 4; i++) {
+                    partial_sums[i] = memoria_->readDouble(base_addr_partial + i * 64);
+                    total += partial_sums[i];
+                    
+                    std::ostringstream oss;
+                    oss << "PE" << i << " partial_sum = " << partial_sums[i];
+                    logBusMessage(oss.str());
+                }
+                
+                std::ostringstream result_oss;
+                result_oss << "FINAL RESULT: Dot Product = " << total;
+                logBusMessage(result_oss.str());
+                
+            } catch (const std::exception& e) {
+                std::ostringstream oss;
+                oss << "ERROR reading results: " << e.what();
+                logBusMessage(oss.str());
+            }
+            
+            btn_step_->deactivate();
+            btn_continue_->deactivate();
             
             status_box_->copy_label("All PEs have finished execution");
         }
@@ -812,7 +833,29 @@ void MESISimulatorGUI::loadSystem() {
         resetSystem();
     }
     
-    logBusMessage("=== Loading system ===");
+    // ============ SOLICITAR N AL USUARIO ============
+    const char* input = fl_input("Enter vector size N (must be > 0):", "16");
+    
+    if (input == nullptr) {
+        // Usuario canceló
+        status_box_->copy_label("Load cancelled by user");
+        return;
+    }
+    
+    int N = std::atoi(input);
+    
+    // Validar que N > 0
+    if (N <= 0) {
+        fl_alert("Error: N must be greater than 0");
+        status_box_->copy_label("ERROR: Invalid N value");
+        return;
+    }
+    
+    vector_size_ = N;
+    
+    std::ostringstream init_msg;
+    init_msg << "=== Loading system with N=" << N << " ===";
+    logBusMessage(init_msg.str());
     status_box_->copy_label("Loading system...");
     Fl::check();
     
@@ -840,7 +883,7 @@ void MESISimulatorGUI::loadSystem() {
             bus_->attach(caches_[i].get());
             
             std::ostringstream oss;
-            oss << "Cache " << i << " created and attached to bus";
+            oss << "Cache C" << i << " created and attached to bus";
             logBusMessage(oss.str());
         }
         Fl::check();
@@ -850,63 +893,86 @@ void MESISimulatorGUI::loadSystem() {
             pes_[i]->setCache(caches_[i].get());
             
             std::ostringstream oss;
-            oss << "PE " << i << " created";
+            oss << "PE" << i << " created";
             logBusMessage(oss.str());
         }
         Fl::check();
         
         uint64_t base_addr_A = 0x0000;
-        uint64_t base_addr_B = 0x0080;
-        uint64_t base_addr_partial = 0x0100;
+        uint64_t base_addr_B = 0x0080 + (N * 8);
+        uint64_t base_addr_partial = 0x0080 + (2 * N * 8);
         
-        for (int i = 0; i < vector_size_; i++) {
+        // Inicializar vectores A y B
+        for (int i = 0; i < N; i++) {
             memoria_->writeDouble(base_addr_A + i * 8, static_cast<double>(i + 1));
             memoria_->writeDouble(base_addr_B + i * 8, 2.0);
         }
         
+        // Inicializar partial_sums
         for (int i = 0; i < 4; i++) {
             memoria_->writeDouble(base_addr_partial + i * 64, 0.0);
         }
         
-        uint64_t shared_counter = 0x0200;
-        memoria_->writeDouble(shared_counter, 0.0);
-        
         logBusMessage("Memory initialized with test vectors");
-        logBusMessage("Vector A: [1.0, 2.0, 3.0, ..., 16.0]");
+        std::ostringstream vec_msg;
+        vec_msg << "Vector A: [1.0, 2.0, 3.0, ..., " << N << ".0]";
+        logBusMessage(vec_msg.str());
         logBusMessage("Vector B: [2.0, 2.0, 2.0, ..., 2.0]");
-        logBusMessage("Expected dot product: 272.0");
+        
+        // Calcular resultado esperado
+        double expected_result = 0.0;
+        for (int i = 0; i < N; i++) {
+            expected_result += static_cast<double>(i + 1) * 2.0;
+        }
+        std::ostringstream exp_msg;
+        exp_msg << "Expected dot product: " << expected_result;
+        logBusMessage(exp_msg.str());
         Fl::check();
         
-        int elements_per_pe = vector_size_ / 4;
-
+        // ============ DISTRIBUCIÓN FLEXIBLE DE ELEMENTOS (inspirado en pruebaescalado.cpp) ============
+        int elementos_base = N / 4;
+        int elementos_extra = N % 4;
+        
         for (int pe_id = 0; pe_id < 4; pe_id++) {
             std::vector<Instruction> program;
             
-            uint64_t my_start_A = base_addr_A + pe_id * elements_per_pe * 8;
-            uint64_t my_start_B = base_addr_B + pe_id * elements_per_pe * 8;
+            // Calcular segmento que procesa este PE
+            int inicio, elementos_a_procesar;
+            
+            if (pe_id < elementos_extra) {
+                // Este PE procesa un elemento extra
+                elementos_a_procesar = elementos_base + 1;
+                inicio = pe_id * elementos_a_procesar;
+            } else {
+                // Este PE procesa la cantidad base
+                elementos_a_procesar = elementos_base;
+                inicio = elementos_extra * (elementos_base + 1) + 
+                         (pe_id - elementos_extra) * elementos_base;
+            }
+            
+            int fin = inicio + elementos_a_procesar - 1;
+            
+            uint64_t my_start_A = base_addr_A + inicio * 8;
+            uint64_t my_start_B = base_addr_B + inicio * 8;
             uint64_t my_partial = base_addr_partial + pe_id * 64;
             
             pes_[pe_id]->setRegister(0, my_start_A);
             pes_[pe_id]->setRegister(1, my_start_B);
             pes_[pe_id]->setRegister(2, my_partial);
-            pes_[pe_id]->setRegister(3, elements_per_pe);
+            pes_[pe_id]->setRegister(3, elementos_a_procesar);
             pes_[pe_id]->setRegisterDouble(4, 0.0);
             
             std::ostringstream init_oss;
-            init_oss << "PE" << pe_id << " registers initialized: "
-                     << "REG0=0x" << std::hex << my_start_A 
-                     << " REG1=0x" << my_start_B
-                     << " REG2=0x" << my_partial
-                     << " REG3=" << std::dec << elements_per_pe;
+            init_oss << "PE" << pe_id << " procesará elementos [" << inicio << "-" << fin 
+                     << "] (" << elementos_a_procesar << " elementos)";
             logBusMessage(init_oss.str());
             
-            pes_[pe_id]->setRegister(7, shared_counter);
-            program.push_back({InstructionType::LOAD, 7, 7, 0, 0});
-            
+            // Cargar acumulador inicial
             program.push_back({InstructionType::LOAD, 4, 2, 0, 0});
             
             int loop_start = program.size();
             
+            // Loop principal
             program.push_back({InstructionType::LOAD, 5, 0, 0, 0});
             program.push_back({InstructionType::LOAD, 6, 1, 0, 0});
             program.push_back({InstructionType::FMUL, 7, 5, 6, 0});
@@ -916,12 +982,13 @@ void MESISimulatorGUI::loadSystem() {
             program.push_back({InstructionType::DEC, 3, 0, 0, 0});
             program.push_back({InstructionType::JNZ, 3, 0, 0, loop_start});
             
+            // Guardar resultado parcial
             program.push_back({InstructionType::STORE, 4, 2, 0, 0});
             
             pes_[pe_id]->loadProgram(program);
             
             std::ostringstream oss;
-            oss << "PE " << pe_id << " program loaded (" << program.size() << " instructions)";
+            oss << "PE" << pe_id << " program loaded (" << program.size() << " instructions)";
             logBusMessage(oss.str());
         }
         
@@ -933,7 +1000,9 @@ void MESISimulatorGUI::loadSystem() {
         btn_continue_->activate();
         btn_run_all_->activate();
         
-        status_box_->copy_label("System loaded successfully. Ready to execute.");
+        std::ostringstream status_msg;
+        status_msg << "System loaded (N=" << N << "). Ready to execute.";
+        status_box_->copy_label(status_msg.str().c_str());
         logBusMessage("=== System ready ===");
         
         Fl::check();
