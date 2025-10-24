@@ -1,10 +1,8 @@
 #include "cache.hpp"
 #include <algorithm>
 #include <iomanip>
+#include <sstream>
 
-// ===============================
-// Helpers internos sin cambios
-// ===============================
 std::optional<uint32_t> Cache2Way::findHit(uint32_t set_idx, uint64_t tg) const {
   const auto& S = sets_[set_idx];
   for (uint32_t w = 0; w < WAYS; ++w) {
@@ -16,9 +14,7 @@ std::optional<uint32_t> Cache2Way::findHit(uint32_t set_idx, uint64_t tg) const 
 
 uint32_t Cache2Way::chooseVictim(uint32_t set_idx) const {
   const auto& S = sets_[set_idx];
-  // Preferí una inválida
   for (uint32_t w = 0; w < WAYS; ++w) if (!S.ways[w].valid) return w;
-  // LRU: menor last_use
   uint32_t victim = 0;
   uint64_t best   = S.ways[0].last_use;
   for (uint32_t w = 1; w < WAYS; ++w) {
@@ -30,7 +26,6 @@ uint32_t Cache2Way::chooseVictim(uint32_t set_idx) const {
 void Cache2Way::writeBackIfDirty(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr) {
   auto& L = sets_[set_idx].ways[way_idx];
   if (L.valid && L.dirty) {
-    // Escribe la línea completa (4 palabras de 64 bits)
     for (uint32_t i = 0; i < WORDS_PER_LINE; ++i) {
       uint64_t w = readWordInLine(L, i);
       mem_.write64(base_addr + i * WORD_SIZE, w);
@@ -41,15 +36,12 @@ void Cache2Way::writeBackIfDirty(uint32_t set_idx, uint32_t way_idx, uint64_t ba
   }
 }
 
-// NOTA: ya no fija MESI aquí; se fija en load/store
 void Cache2Way::fetchLine(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr, uint64_t tg) {
   auto& L = sets_[set_idx].ways[way_idx];
-  // Antes de traer, si la víctima está sucia -> write-back
   if (L.valid && L.dirty) {
     uint64_t old_base = ( (L.tag << (INDEX_BITS + OFFSET_BITS)) | (static_cast<uint64_t>(set_idx) << OFFSET_BITS) );
     writeBackIfDirty(set_idx, way_idx, old_base);
   }
-  // Traer 32B como 4 palabras de 64b
   for (uint32_t i = 0; i < WORDS_PER_LINE; ++i) {
     uint64_t v = 0;
     mem_.read64(base_addr + i * WORD_SIZE, v);
@@ -59,12 +51,10 @@ void Cache2Way::fetchLine(uint32_t set_idx, uint32_t way_idx, uint64_t base_addr
   L.tag     = tg;
   L.valid   = true;
   L.dirty   = false;
-  // L.mesi  = (no tocar aquí)
   L.last_use = ++use_tick_;
   stats_.line_fills++;
 }
 
-// keep (por compatibilidad con pruebas existentes)
 std::pair<uint32_t,bool> Cache2Way::ensureLine(uint64_t addr) {
   const uint32_t set_idx  = index(addr);
   const uint64_t tg       = tag(addr);
@@ -75,15 +65,11 @@ std::pair<uint32_t,bool> Cache2Way::ensureLine(uint64_t addr) {
     L.last_use = ++use_tick_;
     return { *h, true };
   }
-  // Miss: elegir víctima y traer línea
   uint32_t victim = chooseVictim(set_idx);
   fetchLine(set_idx, victim, base, tg);
   return { victim, false };
 }
 
-// ===============================
-// MESI / Bus: nuevos helpers
-// ===============================
 int Cache2Way::findLineByBase(uint64_t base_addr) const {
   const uint32_t set_idx = index(base_addr);
   const uint64_t tg      = tag(base_addr);
@@ -99,7 +85,7 @@ void Cache2Way::snoop(BusMsg msg, uint64_t base_addr) {
   std::scoped_lock lk(mtx_);
   const uint32_t set_idx = index(base_addr);
   int w = findLineByBase(base_addr);
-  if (w < 0) return; // no tengo la línea
+  if (w < 0) return;
 
   auto& L = sets_[set_idx].ways[w];
 
@@ -115,34 +101,78 @@ void Cache2Way::snoop(BusMsg msg, uint64_t base_addr) {
 
   switch (msg) {
     case BusMsg::BusRd:
-      if (L.mesi == MESI::M) { do_flush(); L.dirty=false; L.mesi = MESI::S; }
-      else if (L.mesi == MESI::E) { L.mesi = MESI::S; stats_.snoop_to_S++; }
-      // S/I: no cambian en BusRd
+      if (L.mesi == MESI::M) { 
+        do_flush(); 
+        L.dirty=false; 
+        L.mesi = MESI::S;  // De M a S
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop BusRd: M->S (flush) addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
+      else if (L.mesi == MESI::E) { 
+        L.mesi = MESI::S; // De E a S
+        stats_.snoop_to_S++;
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop BusRd: E->S addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
       break;
 
     case BusMsg::BusRdX:
-      if (L.mesi == MESI::M) { do_flush(); L.dirty=false; }
+      if (L.mesi == MESI::M) { 
+        do_flush(); 
+        L.dirty=false;
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop BusRdX: M->I (flush) addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
+      else if (L.mesi == MESI::E) {
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop BusRdX: E->I addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
+      else if (L.mesi == MESI::S) {
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop BusRdX: S->I addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
       if (L.mesi != MESI::I) {
-        L.mesi = MESI::I; L.valid = false; stats_.snoop_to_I++;
+        L.mesi = MESI::I; 
+        L.valid = false; 
+        stats_.snoop_to_I++;
       }
       break;
 
     case BusMsg::Invalidate:
-      if (L.mesi == MESI::M) { do_flush(); L.dirty=false; }
+      if (L.mesi == MESI::M) { 
+        do_flush(); 
+        L.dirty=false;
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop Invalidate: M->I (flush) addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
+      else if (L.mesi == MESI::E) {
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop Invalidate: E->I addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
+      else if (L.mesi == MESI::S) {
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] Snoop Invalidate: S->I addr=0x" << std::hex << base_addr << std::dec;
+        logMESI(oss.str());
+      }
       if (L.mesi != MESI::I) {
-        L.mesi = MESI::I; L.valid = false; stats_.snoop_to_I++;
+        L.mesi = MESI::I; 
+        L.valid = false; 
+        stats_.snoop_to_I++;
       }
       break;
 
     case BusMsg::Flush:
-      // listeners no accionan; el flush lo ejecuta el emisor
       break;
   }
 }
 
-// ===============================
-// Accesos de 64 bits con MESI/bus
-// ===============================
 bool Cache2Way::load64(uint64_t addr, uint64_t& out) {
   if (addr % WORD_SIZE != 0)
     throw std::invalid_argument("Cache64 load: dirección no alineada a 8 bytes");
@@ -151,7 +181,6 @@ bool Cache2Way::load64(uint64_t addr, uint64_t& out) {
   uint64_t base, tg;
   bool is_miss = false;
   
-  // Fase 1: Verificar hit/miss CON mutex
   {
     std::scoped_lock lk(mtx_);
     set_idx = index(addr);
@@ -164,28 +193,33 @@ bool Cache2Way::load64(uint64_t addr, uint64_t& out) {
       L.last_use = ++use_tick_;
       out = readWordInLine(L, woff);
       stats_.hits++;
-      return true;  // HIT - salimos temprano
+      
+      std::ostringstream oss;
+      oss << "[C" << id_ << "] LOAD HIT addr=0x" << std::hex << addr 
+          << " estado=" << mesiName(L.mesi) << std::dec;
+      logMESI(oss.str());
+      return true;
     }
     
-    // Es MISS
     is_miss = true;
     victim = chooseVictim(set_idx);
   }
-  // Mutex liberado aquí
 
-  // Fase 2: Emitir al bus SIN mutex
   if (is_miss) {
     emit(BusMsg::BusRd, base);
   }
 
-  // Fase 3: Fetch y actualización CON mutex
   {
     std::scoped_lock lk(mtx_);
     fetchLine(set_idx, victim, base, tg);
     auto& L = sets_[set_idx].ways[victim];
-    L.mesi = MESI::S;
+    L.mesi = MESI::E;
     out = readWordInLine(L, woff);
     stats_.misses++;
+    
+    std::ostringstream oss;
+    oss << "[C" << id_ << "] LOAD MISS -> E addr=0x" << std::hex << base << std::dec;
+    logMESI(oss.str());
   }
 
   return false;
@@ -200,9 +234,7 @@ bool Cache2Way::store64(uint64_t addr, uint64_t value) {
   bool is_hit = false;
   bool need_upgrade = false;
   bool need_fetch = false;
-  MESI old_state;
 
-  // Fase 1: Verificar hit/miss CON mutex
   {
     std::scoped_lock lk(mtx_);
     set_idx = index(addr);
@@ -212,12 +244,21 @@ bool Cache2Way::store64(uint64_t addr, uint64_t value) {
 
     if (auto h = findHit(set_idx, tg)) {
       auto& L = sets_[set_idx].ways[*h];
-      old_state = L.mesi;
       
       if (L.mesi == MESI::S) {
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] STORE en S -> need upgrade to M addr=0x" << std::hex << addr << std::dec;
+        logMESI(oss.str());
         need_upgrade = true;
       } else if (L.mesi == MESI::E) {
         L.mesi = MESI::M;
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] STORE E->M addr=0x" << std::hex << addr << std::dec;
+        logMESI(oss.str());
+      } else if (L.mesi == MESI::M) {
+        std::ostringstream oss;
+        oss << "[C" << id_ << "] STORE en M (ya modificado) addr=0x" << std::hex << addr << std::dec;
+        logMESI(oss.str());
       }
       
       writeWordInLine(L, woff, value);
@@ -226,20 +267,20 @@ bool Cache2Way::store64(uint64_t addr, uint64_t value) {
       stats_.hits++;
       is_hit = true;
     } else {
-      // Es MISS
       need_fetch = true;
       victim = chooseVictim(set_idx);
     }
   }
-  // Mutex liberado aquí
 
-  // Fase 2: Emitir al bus SIN mutex
   if (need_upgrade) {
     emit(BusMsg::BusRdX, base);
     
     std::scoped_lock lk(mtx_);
     if (auto h = findHit(set_idx, tg)) {
       sets_[set_idx].ways[*h].mesi = MESI::M;
+      std::ostringstream oss;
+      oss << "[C" << id_ << "] STORE upgrade: S->M addr=0x" << std::hex << base << std::dec;
+      logMESI(oss.str());
     }
     return true;
   }
@@ -255,15 +296,16 @@ bool Cache2Way::store64(uint64_t addr, uint64_t value) {
     L.mesi = MESI::M;
     L.last_use = ++use_tick_;
     stats_.misses++;
+    
+    std::ostringstream oss;
+    oss << "[C" << id_ << "] STORE MISS -> M addr=0x" << std::hex << base << std::dec;
+    logMESI(oss.str());
     return false;
   }
 
   return is_hit;
 }
 
-// ===============================
-// Wrappers double / flush / dump
-// ===============================
 bool Cache2Way::loadDouble(uint64_t addr, double& out) {
   uint64_t bits = 0;
   bool hit = load64(addr, bits);
@@ -345,4 +387,23 @@ std::optional<Cache2Way::MESI> Cache2Way::getLineMESI(uint64_t addr) const {
   const auto& L = sets_[set_idx].ways[w];
   if (!L.valid) return std::nullopt;
   return L.mesi;
+}
+
+Cache2Way::LineInfo Cache2Way::getLineInfo(uint32_t set_idx, uint32_t way_idx) const {
+  std::scoped_lock lk(mtx_);
+  
+  if (set_idx >= SETS || way_idx >= WAYS) {
+    throw std::out_of_range("getLineInfo: índices fuera de rango");
+  }
+  
+  const auto& L = sets_[set_idx].ways[way_idx];
+  
+  LineInfo info;
+  info.tag = L.tag;
+  info.valid = L.valid;
+  info.dirty = L.dirty;
+  info.mesi = L.mesi;
+  info.last_use = L.last_use;
+  
+  return info;
 }

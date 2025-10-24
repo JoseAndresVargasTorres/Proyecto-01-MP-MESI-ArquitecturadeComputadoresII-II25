@@ -4,8 +4,9 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <optional>
 
-// Forward declaration para evitar dependencia circular
+// Forward declaration - solo necesitamos esto porque usamos puntero
 class Cache2Way;
 
 // Tipos de instrucción según ISA especificado
@@ -34,7 +35,7 @@ private:
     int pe_id;
     uint64_t registers[8];  // 8 registros de 64 bits (REG0-REG7)
     std::vector<Instruction> program;  // Programa cargado
-    int pc;  // Program counter
+    size_t pc;  // Program counter
     
     // Estadísticas
     uint64_t read_ops;
@@ -50,8 +51,8 @@ public:
     void executeNextInstruction();
     bool hasFinished() const;
     void reset();
-    
     void hardReset();
+    
     // Acceso a registros
     void setRegister(int reg_num, uint64_t value);
     uint64_t getRegister(int reg_num) const;
@@ -64,11 +65,20 @@ public:
     uint64_t getWriteOps() const { return write_ops; }
     void resetStats();
     
-
-    // Configuración de caché
+    // Métodos de acceso a la caché
     void setCache(Cache2Way* c) { cache_ = c; }
     
     int getPEId() const { return pe_id; }
+    
+    // Obtener PC para la GUI
+    size_t getPC() const { return pc; }
+    
+    // Obtener puntero a registros para la GUI
+    const uint64_t* getRegisters() const { return registers; }
+
+    // Método para obtener estado MESI de una línea de caché
+    // Declaración aquí, implementación en .cpp donde se incluye cache.hpp
+    std::optional<int> getMESIStateAsInt(uint64_t addr) const;
 };
 
 #endif // PROCESSING_ELEMENT_HPP
