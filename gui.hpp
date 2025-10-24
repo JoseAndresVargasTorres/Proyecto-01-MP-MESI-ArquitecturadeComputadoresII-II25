@@ -210,6 +210,11 @@ private:
     int vector_size_;
     int breakpoint_interval_;
     bool system_loaded_;
+    
+    // Variables para stepping round-robin
+    int current_pe_for_step_;  // Índice del PE que ejecutará la siguiente instrucción
+    std::vector<bool> pe_alive_; // Estado de si cada PE está activo
+    bool all_pes_finished_;  // <--- AGREGA ESTA LÍNEA
 
     // Mutexes
     std::mutex display_mutex_;
